@@ -1,5 +1,5 @@
 """Офлайн-тесты: модель заменена заглушкой, проверяется всё остальное
-(загрузка, привязка цитат к строкам, сборка отчёта, обработка «галлюцинаций»)."""
+(загрузка, привязка цитат к строкам, дубли, сборка отчёта, обработка «галлюцинаций»)."""
 
 from __future__ import annotations
 
@@ -12,9 +12,10 @@ from reqcheck import cli, pipeline, report
 from reqcheck.criteria import REQ_CODES
 from reqcheck.grounding import Grounder
 from reqcheck.loader import LoadError, load_document
-from reqcheck.schemas import (ConclusionText, CriterionVerdict, Decision, FixItem, QuoteRef,
-                              RequirementBatchResult, RequirementCheck, SegmentationResult, Segment,
-                              SetDefect, SetResult, ChecklistItem, VerificationResult)
+from reqcheck.schemas import (ChecklistItem, ConclusionText, ConflictScanResult, CriterionVerdict, Decision,
+                              DuplicateGroup, DuplicateResult, FixItem, QuoteRef, RequirementBatchResult,
+                              RequirementCheck, Segment, SegmentationResult, SetDefect, SetResult,
+                              VerificationResult)
 
 DOC = Path(__file__).resolve().parent.parent / "docs" / "requirements.md"
 
@@ -28,7 +29,10 @@ class FakeLLM:
     provider, model = "fake", "fake-model"
     calls = input_tokens = output_tokens = 0
 
-    def generate(self, system, user, schema, label=""):
+    def __init__(self):
+        self.req_ver_id = ""
+
+    def generate(self, system, user, schema, label="", effort=None):
         self.calls += 1
         return getattr(self, "_" + schema.__name__)(user)
 
@@ -73,18 +77,44 @@ class FakeLLM:
         ], checklist=[ChecklistItem(item="Требование может быть протестировано", status="partial",
                                      justification="Раздел тестирования пуст.")])
 
+    def _ConflictScanResult(self, user):
+        return ConflictScanResult(analysis="сценарий: смена порога после первого push", defects=[
+            SetDefect(criterion="S-CNS", kind="contradiction", severity="critical", related_req_ids=["R-02", "R-03"],
+                      quotes=[QuoteRef(text=Q_F3), QuoteRef(text=Q_F4)],
+                      problem="Сценарий: порог 100, push, смена порога на 200 — Ф-3 запрещает второй push, Ф-4 требует. "
+                              "Один push в месяц и повторный push не совместимы.",
+                      recommendation="Определить приоритет."),
+            SetDefect(criterion="S-VAL", kind="validation", severity="major", related_req_ids=["R-04"],
+                      quotes=[QuoteRef(text="в течение минуты")],
+                      problem="Нет перцентиля SLA в приёмке.", recommendation="Добавить."),
+        ])
+
+    def _DuplicateResult(self, user):
+        probs = dict(re.findall(r"^- (D-\d+) \[[^\]]*\] (.*)$", user, flags=re.M))
+        push = [i for i, p in probs.items() if "Один push в месяц" in p]
+        perc = [i for i, p in probs.items() if "перцентиля" in p]
+        assert len(push) == 2 and len(perc) == 2, probs
+        req_ver = next(i for i in perc if "условий" in probs[i])
+        set_ver = next(i for i in perc if i != req_ver)
+        self.req_ver_id = req_ver
+        return DuplicateResult(groups=[
+            DuplicateGroup(keep_id=push[0], drop_ids=[push[1]], reason="то же противоречие"),
+            DuplicateGroup(keep_id=req_ver, drop_ids=[set_ver], reason="тот же SLA"),   # код оставит дефект набора
+        ])
+
     def _VerificationResult(self, user):
         ids = re.findall(r"^- (D-\d+) \[\w+, COR\]", user, flags=re.M)
         return VerificationResult(decisions=[Decision(defect_id=i, keep=False, reason="не подтверждается") for i in ids])
 
     def _ConclusionText(self, user):
+        first = re.search(r"^- (D-\d+) \[critical", user, flags=re.M).group(1)
         return ConclusionText(rationale="Есть критичные дефекты.", top_fixes=[
-            FixItem(defect_ids=["D-001", "D-777"], action="Определить измеримый критерий.")])
+            FixItem(defect_ids=[first, "D-777", self.req_ver_id], action="Определить измеримый критерий.")])
 
 
 @pytest.fixture(scope="module")
 def result():
-    return pipeline.run(load_document(DOC), FakeLLM(), batch_size=2)
+    return pipeline.run(load_document(DOC), FakeLLM(), batch_size=2, workers=2)
 
 
 def test_segmentation_sorted_grounded_and_numbered(result):
@@ -99,21 +129,34 @@ def test_requirement_defects_grounded(result):
     assert len(ver) == 1 and ver[0].quotes[0].line_from == 46 and ver[0].severity == "critical"
     cor = [d for d in result.defects if d.criterion == "COR"]
     assert len(cor) == 1 and cor[0].rejected and cor[0].quotes[0].approx      # привязан к требованию, отклонён верификатором
-    assert result.matrix["R-03"]["COR"] == "ok" and result.matrix["R-04"]["VER"] == "violated"
+    assert result.matrix["R-03"]["COR"] == "ok"                                # отклонённый верификатором — не ✗
+    assert result.matrix["R-04"]["VER"] == "violated"                          # слитый как дубль — остаётся ✗
 
 
 def test_set_defects_and_dropped_hallucination(result):
-    sets = [d for d in result.defects if d.scope == "set"]
-    assert len(sets) == 1 and sets[0].kind == "contradiction"
-    assert sets[0].req_ids == ["R-02", "R-03"]                                  # R-99 отфильтрован
-    assert {q.line_from for q in sets[0].quotes} == {39, 40}
+    contr = [d for d in result.active if d.kind == "contradiction"]
+    assert len(contr) == 1                                                      # второй (из прохода противоречий) слит
+    assert contr[0].req_ids == ["R-02", "R-03"]                                 # R-99 отфильтрован
+    assert {q.line_from for q in contr[0].quotes} == {39, 40}
     assert any("без проверяемой привязки" in w for w in result.warnings)
+
+
+def test_duplicates_merged_and_set_level_kept(result):
+    merged = [d for d in result.defects if d.merged_into]
+    assert len(merged) == 2
+    req_ver = next(d for d in merged if d.scope == "req")
+    keep = next(d for d in result.defects if d.id == req_ver.merged_into)
+    assert keep.scope == "set" and not keep.rejected and "R-04" in keep.req_ids   # остался дефект набора
+    assert req_ver.rejected and req_ver.reject_reason.startswith("дубль")
+    assert all(d.id not in {x.id for x in result.active} for d in merged)
 
 
 def test_verdict_and_conclusion(result):
     assert result.verdict == "no"
-    assert [f.defect_ids for f in result.conclusion.top_fixes] == [["D-001"]] or \
-        all("D-777" not in f.defect_ids for f in result.conclusion.top_fixes)
+    ids = [x for f in result.conclusion.top_fixes for x in f.defect_ids]
+    assert "D-777" not in ids
+    active_ids = {d.id for d in result.active}
+    assert ids and all(i in active_ids for i in ids)                            # дубль заменён на дефект, в который влит
 
 
 def test_report_structure(result):
@@ -124,7 +167,7 @@ def test_report_structure(result):
         assert h in md, h
     assert "| R-03 | Ф-4 |" in md and "fake-model" in md and "Уведомление о расходах по карте" in md
     assert "Выдуманная цитата" not in md.split("Приложение Б")[0]
-    assert "НЕТ" in md
+    assert "НЕТ" in md and "учтено в" in md and "Объединено дублей" in md
     assert "строка 39" in md and "строка 40" in md
     assert report.to_json(result).startswith("{")
 
@@ -138,6 +181,14 @@ def test_grounding_tolerates_markdown_and_ellipsis_and_fuzzy():
     assert fuzzy and fuzzy.approx and fuzzy.line_from == 40
     assert g.locate("Совершенно постороннее предложение про космос и котиков") is None
     assert g.locate("") is None
+
+
+def test_grounding_prefers_occurrence_near_requirement():
+    g = Grounder(load_document(DOC))
+    # «0 или 1» встречается и в параметрах запроса (144), и в параметрах ответа (157)
+    assert g.locate("0 или 1", prefer=[(157, 157)]).line_from == 157
+    assert g.locate("0 или 1", prefer=[(144, 144)]).line_from == 144
+    assert g.locate("Prod: —", prefer=[(108, 108)]).line_from == 108
 
 
 def test_loader_errors(tmp_path):
@@ -154,6 +205,6 @@ def test_loader_errors(tmp_path):
 def test_cli_end_to_end(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "make_client", lambda *a, **k: FakeLLM())
     out, js = tmp_path / "out" / "report.md", tmp_path / "r.json"
-    assert cli.main([str(DOC), str(out), "--json", str(js), "--batch-size", "3"]) == 0
+    assert cli.main([str(DOC), str(out), "--json", str(js), "--batch-size", "3", "--workers", "2"]) == 0
     assert out.read_text(encoding="utf-8").startswith("# Отчёт о проверке требований") and js.exists()
     assert cli.main([str(tmp_path / "missing.md"), str(out)]) == 1

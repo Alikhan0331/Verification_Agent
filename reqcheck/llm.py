@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 from typing import TypeVar
 
@@ -36,24 +37,39 @@ class LLMClient:
         self.input_tokens = 0
         self.output_tokens = 0
         self._last_call = 0.0
+        self._lock = threading.Lock()  # агент вызывает модель из нескольких потоков
 
     # --- реализуется в наследниках ---
-    def _call(self, system: str, user: str, schema: type[BaseModel]) -> str | dict:
+    def _call(self, system: str, user: str, schema: type[BaseModel], effort: str | None) -> str | dict:
         raise NotImplementedError
 
-    # --- общее ---
-    def generate(self, system: str, user: str, schema: type[T], label: str = "") -> T:
-        """Вызов модели с ретраями (429/5xx) и повтором при невалидном JSON."""
-        hint = ""
-        last_err: Exception | None = None
-        for attempt in range(1, self.max_retries + 1):
+    def _throttle(self) -> None:
+        """Выдерживает минимальный интервал между стартами вызовов (общий для всех потоков)."""
+        with self._lock:
             wait = self.min_interval - (time.monotonic() - self._last_call)
             if wait > 0:
                 time.sleep(wait)
+            self._last_call = time.monotonic()
+            self.calls += 1
+
+    def _add_usage(self, inp: int, out: int) -> None:
+        with self._lock:
+            self.input_tokens += inp or 0
+            self.output_tokens += out or 0
+
+    # --- общее ---
+    def generate(self, system: str, user: str, schema: type[T], label: str = "",
+                 effort: str | None = None) -> T:
+        """Вызов модели с ретраями (429/5xx) и повтором при невалидном JSON.
+
+        effort: "low" | "medium" | "high" — глубина размышлений модели, если провайдер это умеет.
+        """
+        hint = ""
+        last_err: Exception | None = None
+        for attempt in range(1, self.max_retries + 1):
             try:
-                self._last_call = time.monotonic()
-                self.calls += 1
-                raw = self._call(system, user + hint, schema)
+                self._throttle()
+                raw = self._call(system, user + hint, schema, effort)
                 data = raw if isinstance(raw, dict) else json.loads(_strip_fence(raw))
                 return schema.model_validate(data)
             except (ValidationError, json.JSONDecodeError) as e:
@@ -95,24 +111,32 @@ class GeminiClient(LLMClient):
             raise LLMError("Нужен пакет google-genai (pip install -r requirements.txt)") from e
         self._types = types
         self._client = genai.Client(api_key=api_key)
+        self._thinking_ok = True  # станет False, если модель не принимает thinking_level
 
-    def _call(self, system, user, schema):
+    def _config(self, system, schema, effort):
         t = self._types
-        resp = self._client.models.generate_content(
-            model=self.model,
-            contents=user,
-            config=t.GenerateContentConfig(
-                system_instruction=system,
-                response_mime_type="application/json",
-                response_schema=schema,
-                temperature=0.1,
-                max_output_tokens=32000,
-            ),
-        )
+        kw = dict(system_instruction=system, response_mime_type="application/json",
+                  response_schema=schema, temperature=0.1, max_output_tokens=32000)
+        level = (effort or os.getenv("GEMINI_THINKING") or "").strip().upper()
+        if level and self._thinking_ok and hasattr(t, "ThinkingLevel") and level in t.ThinkingLevel.__members__:
+            kw["thinking_config"] = t.ThinkingConfig(thinking_level=level)
+        return t.GenerateContentConfig(**kw)
+
+    def _call(self, system, user, schema, effort=None):
+        try:
+            resp = self._client.models.generate_content(
+                model=self.model, contents=user, config=self._config(system, schema, effort))
+        except Exception as e:
+            if self._thinking_ok and "thinking" in str(e).lower() and "400" in str(e):
+                self._thinking_ok = False  # модель не поддерживает управление размышлениями — работаем без него
+                _log("  модель не принимает thinking_level — продолжаю без него")
+                resp = self._client.models.generate_content(
+                    model=self.model, contents=user, config=self._config(system, schema, effort))
+            else:
+                raise
         usage = getattr(resp, "usage_metadata", None)
         if usage:
-            self.input_tokens += getattr(usage, "prompt_token_count", 0) or 0
-            self.output_tokens += getattr(usage, "candidates_token_count", 0) or 0
+            self._add_usage(getattr(usage, "prompt_token_count", 0), getattr(usage, "candidates_token_count", 0))
         if not resp.text:
             raise json.JSONDecodeError("пустой ответ модели", "", 0)
         return resp.text
@@ -129,7 +153,7 @@ class AnthropicClient(LLMClient):
             raise LLMError("Нужен пакет anthropic (pip install -r requirements.txt)") from e
         self._client = anthropic.Anthropic(api_key=api_key)
 
-    def _call(self, system, user, schema):
+    def _call(self, system, user, schema, effort=None):
         msg = self._client.messages.create(
             model=self.model,
             max_tokens=16000,
@@ -143,8 +167,7 @@ class AnthropicClient(LLMClient):
             }],
             tool_choice={"type": "tool", "name": "submit_result"},
         )
-        self.input_tokens += msg.usage.input_tokens
-        self.output_tokens += msg.usage.output_tokens
+        self._add_usage(msg.usage.input_tokens, msg.usage.output_tokens)
         for block in msg.content:
             if block.type == "tool_use":
                 return block.input

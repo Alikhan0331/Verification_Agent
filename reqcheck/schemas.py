@@ -83,6 +83,22 @@ class SetResult(BaseModel):
                                                        "его пункта; иначе пустой список")
 
 
+class ConflictScanResult(BaseModel):
+    analysis: str = Field(description="Рабочие заметки: правила, сценарии, где они сталкиваются, и итог разбора (сначала это, потом defects)")
+    defects: list[SetDefect]
+
+
+# --- Этап 3б. Объединение дублей ----------------------------------------------
+class DuplicateGroup(BaseModel):
+    keep_id: str = Field(description="D-### дефекта, который остаётся (самый полный и точный)")
+    drop_ids: list[str] = Field(description="D-### дефектов, описывающих ТУ ЖЕ проблему")
+    reason: str
+
+
+class DuplicateResult(BaseModel):
+    groups: list[DuplicateGroup]
+
+
 # --- Этап 4. Верификация найденного ------------------------------------------
 class Decision(BaseModel):
     defect_id: str

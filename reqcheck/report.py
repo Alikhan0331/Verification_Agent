@@ -53,8 +53,19 @@ def _defect_md(res: RunResult, d: Defect) -> list[str]:
     head = f"- **{d.id}** · {_crit(d.criterion)} · {SEVERITY_RU[d.severity]}"
     if d.scope == "set":
         head += f" · {_KIND_RU.get(d.kind, d.kind)}"
+    if d.scope == "set" or len(d.req_ids) > 1:
         if d.req_ids:
             head += " · затронуты: " + ", ".join(_req_label(res, r) for r in d.req_ids)
+    merged = [x.id for x in res.defects if x.merged_into == d.id]
+    if merged:
+        head += " · объединяет также: " + ", ".join(merged)
+    # незначительные замечания по одному требованию — коротко: цитата уже приведена над списком
+    if d.scope == "req" and d.severity == "minor" and len(d.quotes) == 1:
+        q = d.quotes[0]
+        line = f"{head} ({_where(res, q)}): {d.problem}"
+        if d.recommendation:
+            line += f" *Как исправить:* {d.recommendation}"
+        return [line]
     out = [head]
     for q in d.quotes:
         out.append("  " + _quote_md(res, q))
@@ -90,7 +101,8 @@ def render(res: RunResult) -> str:
     add(f"| Версия агента | {_c(m['agent_version'])} |")
     add(f"| Вызовов модели / токенов (вход+выход) | {m['calls']} / {m['input_tokens']}+{m['output_tokens']} |")
     add(f"| Время работы | {m['seconds']} с |")
-    add(f"| Параметры | пачка проверки = {m['batch_size']}, верификация дефектов = {'вкл' if m['verify'] else 'выкл'} |")
+    add(f"| Параметры | пачка проверки = {m['batch_size']}, потоков = {m.get('workers', 1)}, "
+        f"верификация дефектов = {'вкл' if m['verify'] else 'выкл'} |")
     add("")
 
     # 2. Критерии
@@ -146,6 +158,10 @@ def render(res: RunResult) -> str:
     for d in active:
         if d.scope == "req":
             req_defects.setdefault(d.req_ids[0], []).append(d)
+    merged_refs: dict[str, list[Defect]] = {}
+    for d in res.defects:
+        if d.merged_into and d.scope == "req":
+            merged_refs.setdefault(d.req_ids[0], []).append(d)
     for r in res.reqs:
         ds = sorted(req_defects.get(r.id, []), key=lambda d: SEVERITY_ORDER[d.severity])
         title = f"#### {r.id}" + (f" ({r.doc_id})" if r.doc_id else "") + f" — {r.summary}"
@@ -153,6 +169,12 @@ def render(res: RunResult) -> str:
         add("")
         add(f"> «{' '.join(r.quote.split())}» — {_where(res, Quote(r.quote, r.line_from, r.line_to))}")
         add("")
+        refs = merged_refs.get(r.id, [])
+        if not ds and refs:
+            for d in refs:
+                add(f"- **{d.id}** · {_crit(d.criterion)}: {d.problem} → учтено в **{d.merged_into}** (см. ниже)")
+            add("")
+            continue
         if not ds:
             unknown = [c for c in REQ_CODES if res.matrix[r.id][c] == "?"]
             add("Нарушений не выявлено." if not unknown else
@@ -161,6 +183,8 @@ def render(res: RunResult) -> str:
             continue
         for d in ds:
             L.extend(_defect_md(res, d))
+        for d in refs:
+            add(f"- **{d.id}** · {_crit(d.criterion)}: {d.problem} → учтено в **{d.merged_into}** (см. ниже)")
         add("")
 
     # 5. Набор
@@ -189,7 +213,7 @@ def render(res: RunResult) -> str:
     add("## 6. Сводка")
     add("")
     sev = Counter(d.severity for d in active)
-    with_viol = len({d.req_ids[0] for d in active if d.scope == "req"})
+    with_viol = sum(1 for row in res.matrix.values() if "violated" in row.values())
     add("| Показатель | Значение |")
     add("| :--- | :--- |")
     add(f"| Требований выделено | {len(res.reqs)} |")
@@ -199,6 +223,9 @@ def render(res: RunResult) -> str:
     add(f"| — критичных | {sev['critical']} |")
     add(f"| — значительных | {sev['major']} |")
     add(f"| — незначительных | {sev['minor']} |")
+    n_merged = sum(1 for d in res.defects if d.merged_into)
+    if n_merged:
+        add(f"| Объединено дублей | {n_merged} |")
     add("")
     by_crit = Counter(d.criterion for d in active)
     if by_crit:
@@ -247,7 +274,7 @@ def render(res: RunResult) -> str:
         add("")
 
     # Приложения
-    rejected = [d for d in res.defects if d.rejected]
+    rejected = [d for d in res.defects if d.rejected and not d.merged_into]
     if rejected:
         add("## Приложение А. Отклонено этапом верификации")
         add("")
