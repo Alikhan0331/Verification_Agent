@@ -32,6 +32,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--model", help="имя модели (иначе GEMINI_MODEL / ANTHROPIC_MODEL из .env)")
     ap.add_argument("--batch-size", type=int, default=10, help="сколько требований проверять за один вызов (10)")
     ap.add_argument("--workers", type=int, default=3, help="параллельных вызовов модели при проверке требований (3)")
+    ap.add_argument("--segmentation", choices=["auto", "rules", "llm"], default="auto",
+                    help="нарезка на требования: auto — по разметке, если она есть, иначе моделью; "
+                         "rules — только по разметке; llm — только моделью")
     ap.add_argument("--no-verify", action="store_true", help="пропустить этап верификации дефектов")
     ap.add_argument("--min-interval", type=float, help="пауза между вызовами модели, с (для бесплатных лимитов)")
     ap.add_argument("--json", metavar="PATH", help="дополнительно сохранить результат в JSON")
@@ -43,7 +46,8 @@ def main(argv: list[str] | None = None) -> int:
         llm = make_client(args.provider, args.model, args.min_interval)
         print(f"Документ: {doc.name}, строк: {len(doc.lines)}. Модель: {llm.provider}/{llm.model}", file=sys.stderr)
         result = pipeline.run(doc, llm, batch_size=max(args.batch_size, 1),
-                              verify=not args.no_verify, workers=max(args.workers, 1))
+                              verify=not args.no_verify, workers=max(args.workers, 1),
+                              segmentation=args.segmentation)
     except (LoadError, LLMError, RuntimeError) as e:
         print(f"Ошибка: {e}", file=sys.stderr)
         return 1

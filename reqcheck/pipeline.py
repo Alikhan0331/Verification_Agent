@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import __version__, prompts
+from . import __version__, prompts, segmenter
 from .criteria import REQ_CODES, SEVERITY_ORDER
 from .grounding import Grounder
 from .llm import LLMClient
@@ -111,7 +111,21 @@ def _req_view(reqs: list[Req]) -> list[dict]:
 
 
 # --- Этап 1 ------------------------------------------------------------------
-def _segment(doc: Document, llm: LLMClient, grounder: Grounder, warnings: list[str]) -> tuple[str, list[Req]]:
+def _segment_rules(doc: Document) -> tuple[str, list[Req]]:
+    """Нарезка правилами по разметке документа — без вызова модели и без разброса от прогона к прогону."""
+    title, units = segmenter.segment(doc)
+    if not units:
+        raise RuntimeError("Нарезка по разметке не выделила ни одного требования")
+    width = 3 if len(units) > 99 else 2
+    reqs = [Req(f"R-{i:0{width}d}", u.doc_id, u.section, u.kind, u.quote, u.summary, u.line_from, u.line_to)
+            for i, u in enumerate(units, start=1)]
+    return title, reqs
+
+
+def _segment(doc: Document, llm: LLMClient, grounder: Grounder, warnings: list[str],
+             mode: str = "auto") -> tuple[str, list[Req]]:
+    if mode == "rules" or (mode == "auto" and segmenter.looks_structured(doc)):
+        return _segment_rules(doc)
     system, user = prompts.segmentation_prompt(doc.name, doc.numbered())
     seg = llm.generate(system, user, SegmentationResult, "нарезка", effort="low")
     found: list[tuple[int, int, str, object]] = []
@@ -352,13 +366,14 @@ def _conclude(doc, llm, result: RunResult, warnings):
     return concl
 
 
-def run(doc: Document, llm: LLMClient, batch_size: int = 10, verify: bool = True, workers: int = 3) -> RunResult:
+def run(doc: Document, llm: LLMClient, batch_size: int = 10, verify: bool = True, workers: int = 3,
+        segmentation: str = "auto") -> RunResult:
     t0 = time.monotonic()
     warnings: list[str] = []
     grounder = Grounder(doc)
 
     _log(f"[1/{TOTAL_STEPS}] Нарезка на требования…")
-    title, reqs = _segment(doc, llm, grounder, warnings)
+    title, reqs = _segment(doc, llm, grounder, warnings, segmentation)
     _log(f"      выделено требований: {len(reqs)}")
 
     matrix, req_defects = _check_requirements(doc, llm, grounder, reqs, batch_size, workers, warnings)

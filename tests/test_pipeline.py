@@ -114,7 +114,7 @@ class FakeLLM:
 
 @pytest.fixture(scope="module")
 def result():
-    return pipeline.run(load_document(DOC), FakeLLM(), batch_size=2, workers=2)
+    return pipeline.run(load_document(DOC), FakeLLM(), batch_size=2, workers=2, segmentation="llm")
 
 
 def test_segmentation_sorted_grounded_and_numbered(result):
