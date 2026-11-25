@@ -85,7 +85,7 @@ class FakeLLM:
                               "Один push в месяц и повторный push не совместимы.",
                       recommendation="Определить приоритет."),
             SetDefect(criterion="S-VAL", kind="validation", severity="major", related_req_ids=["R-04"],
-                      quotes=[QuoteRef(text="в течение минуты")],
+                      quotes=[QuoteRef(text="в течение минуты"), QuoteRef(text="Покупка 31 января в 23:58 на 4 000")],
                       problem="Нет перцентиля SLA в приёмке.", recommendation="Добавить."),
         ])
 
@@ -146,9 +146,29 @@ def test_duplicates_merged_and_set_level_kept(result):
     assert len(merged) == 2
     req_ver = next(d for d in merged if d.scope == "req")
     keep = next(d for d in result.defects if d.id == req_ver.merged_into)
-    assert keep.scope == "set" and not keep.rejected and "R-04" in keep.req_ids   # остался дефект набора
+    # сквозной дефект набора (две точки документа) шире дефекта по одному требованию — остаётся он
+    assert keep.scope == "set" and not keep.rejected and "R-04" in keep.req_ids
     assert req_ver.rejected and req_ver.reject_reason.startswith("дубль")
     assert all(d.id not in {x.id for x in result.active} for d in merged)
+
+
+def _d(scope, kind, sev, crit, req_ids, lines):
+    return pipeline.Defect("D-000", scope, crit, sev, kind, req_ids,
+                           [pipeline.Quote("q", a, b) for a, b in lines], "p", "r")
+
+
+def test_keeper_prefers_specific_requirement_defect_over_masked_set_defect():
+    req = _d("req", "requirement", "major", "VER", ["R-01"], [(5, 5)])
+    masked = _d("set", "validation", "critical", "S-VAL", ["R-01"], [(5, 5)])      # то же место, критерий «набора»
+    assert pipeline._pick_keeper([masked, req]) is req
+
+
+def test_keeper_prefers_cross_cutting_set_defect():
+    req = _d("req", "requirement", "major", "COR", ["R-01"], [(5, 5)])
+    contr = _d("set", "contradiction", "major", "S-CNS", ["R-01", "R-02"], [(5, 5), (9, 9)])
+    assert pipeline._pick_keeper([req, contr]) is contr
+    multi = _d("set", "validation", "major", "S-VAL", ["R-03"], [(5, 5), (30, 30)])
+    assert pipeline._pick_keeper([req, multi]) is multi
 
 
 def test_verdict_and_conclusion(result):

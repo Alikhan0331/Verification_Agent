@@ -260,6 +260,29 @@ def _check_set(doc, llm, grounder, reqs, warnings):
 
 
 # --- Этап 4: дубли -------------------------------------------------------------
+def _is_cross_cutting(d: Defect) -> bool:
+    """Дефект по-настоящему «о наборе»: противоречие/трассировка либо охват нескольких мест документа."""
+    if d.scope != "set":
+        return False
+    spots = {(q.line_from, q.line_to) for q in d.quotes}
+    return d.kind in ("contradiction", "traceability") or len(d.req_ids) > 1 or len(spots) > 1
+
+
+def _pick_keeper(group: list[Defect]) -> Defect:
+    """Какой из дублей оставить.
+
+    Сквозной дефект набора (противоречие между пунктами и т. п.) остаётся как есть — он шире любого
+    дефекта по одному требованию. Иначе остаётся дефект по конкретному требованию: он привязан к
+    своему требованию и несёт точный критерий, а модель в проходе по набору часто маскирует его
+    под S-VAL. Среди равных — более серьёзный, затем первый по порядку."""
+    cross = [d for d in group if _is_cross_cutting(d)]
+    if cross:
+        return min(cross, key=lambda d: SEVERITY_ORDER[d.severity])
+    req = [d for d in group if d.scope == "req"]
+    pool = req or group
+    return min(pool, key=lambda d: SEVERITY_ORDER[d.severity])
+
+
 def _dedup(doc, llm, defects: list[Defect], warnings: list[str]) -> None:
     if len(defects) < 2:
         return
@@ -277,8 +300,7 @@ def _dedup(doc, llm, defects: list[Defect], warnings: list[str]) -> None:
         if len(ids) < 2:
             continue
         group = [by_id[x] for x in ids]
-        # остаётся дефект уровня набора, если он есть в группе, иначе тот, что назвала модель
-        keep = next((d for d in group if d.scope == "set"), group[0])
+        keep = _pick_keeper(group)
         for d in group:
             if d is keep:
                 continue
