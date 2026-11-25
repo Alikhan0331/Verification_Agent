@@ -1,0 +1,59 @@
+"""Командная строка: python -m reqcheck <требования> <отчёт>"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+from . import __version__, pipeline, report
+from .llm import LLMError, make_client
+from .loader import LoadError, load_document
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:  # корректный вывод кириллицы в консоли Windows
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass
+
+    ap = argparse.ArgumentParser(prog="reqcheck",
+                                 description="Агент статической проверки документа с требованиями")
+    ap.add_argument("input", help="путь к документу требований (.pdf, .md, .txt, .docx)")
+    ap.add_argument("output", nargs="?", default="report.md", help="путь к файлу отчёта (по умолчанию report.md)")
+    ap.add_argument("--provider", help="gemini | anthropic (иначе LLM_PROVIDER из .env, по умолчанию gemini)")
+    ap.add_argument("--model", help="имя модели (иначе GEMINI_MODEL / ANTHROPIC_MODEL из .env)")
+    ap.add_argument("--batch-size", type=int, default=6, help="сколько требований проверять за один вызов (6)")
+    ap.add_argument("--no-verify", action="store_true", help="пропустить этап верификации дефектов")
+    ap.add_argument("--min-interval", type=float, help="пауза между вызовами модели, с (для бесплатных лимитов)")
+    ap.add_argument("--json", metavar="PATH", help="дополнительно сохранить результат в JSON")
+    ap.add_argument("--version", action="version", version=f"reqcheck {__version__}")
+    args = ap.parse_args(argv)
+
+    try:
+        doc = load_document(args.input)
+        llm = make_client(args.provider, args.model, args.min_interval)
+        print(f"Документ: {doc.name}, строк: {len(doc.lines)}. Модель: {llm.provider}/{llm.model}", file=sys.stderr)
+        result = pipeline.run(doc, llm, batch_size=max(args.batch_size, 1), verify=not args.no_verify)
+    except (LoadError, LLMError, RuntimeError) as e:
+        print(f"Ошибка: {e}", file=sys.stderr)
+        return 1
+
+    out = Path(args.output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(report.render(result), encoding="utf-8")
+    if args.json:
+        Path(args.json).write_text(report.to_json(result), encoding="utf-8")
+    print(f"Готово: {out} (требований: {len(result.reqs)}, дефектов: {len(result.active)}, "
+          f"вызовов модели: {llm.calls})", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
