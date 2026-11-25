@@ -352,7 +352,7 @@ def _conclude(doc, llm, result: RunResult, warnings):
     return concl
 
 
-def run(doc: Document, llm: LLMClient, batch_size: int = 6, verify: bool = True, workers: int = 3) -> RunResult:
+def run(doc: Document, llm: LLMClient, batch_size: int = 10, verify: bool = True, workers: int = 3) -> RunResult:
     t0 = time.monotonic()
     warnings: list[str] = []
     grounder = Grounder(doc)
@@ -388,7 +388,7 @@ def run(doc: Document, llm: LLMClient, batch_size: int = 6, verify: bool = True,
     result.conclusion = _conclude(doc, llm, result, warnings)
 
     result.meta = dict(
-        provider=llm.provider, model=llm.model, calls=llm.calls,
+        provider=llm.provider, model=" → ".join(getattr(llm, "models_used", None) or [llm.model]), calls=llm.calls,
         input_tokens=llm.input_tokens, output_tokens=llm.output_tokens,
         seconds=round(time.monotonic() - t0, 1), batch_size=batch_size, workers=workers, verify=verify,
         agent_version=agent_version(),

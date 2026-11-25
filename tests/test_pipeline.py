@@ -172,6 +172,22 @@ def test_report_structure(result):
     assert report.to_json(result).startswith("{")
 
 
+def test_report_conformance_to_task_template(result):
+    from reqcheck.conformance import check_report
+
+    problems = check_report(result, report.render(result))
+    # версию агента из git тест не контролирует (репозиторий может быть без коммитов)
+    assert [p for p in problems if "версия агента" not in p] == []
+
+
+def test_conformance_detects_broken_report(result):
+    from reqcheck.conformance import check_report
+
+    md = report.render(result).replace("## 7. Итог", "## Итоги").replace("Дата прогона", "Когда")
+    problems = check_report(result, md)
+    assert any("Итог" in p for p in problems) and any("Дата прогона" in p for p in problems)
+
+
 def test_grounding_tolerates_markdown_and_ellipsis_and_fuzzy():
     g = Grounder(load_document(DOC))
     assert g.locate("**Ф-3.** Когда расходы переходят от суммы ниже порога")

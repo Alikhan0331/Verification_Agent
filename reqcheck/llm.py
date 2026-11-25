@@ -29,8 +29,12 @@ def _log(msg: str) -> None:
 class LLMClient:
     provider = "base"
 
-    def __init__(self, model: str, min_interval: float = 0.0, max_retries: int = 5):
+    def __init__(self, model: str, min_interval: float = 0.0, max_retries: int = 5,
+                 fallbacks: list[str] | None = None):
         self.model = model
+        self.models = [model] + [m for m in (fallbacks or []) if m and m != model]
+        self.models_used = [model]      # какие модели реально отвечали в этом прогоне
+        self._dead: set[str] = set()    # модели с исчерпанной суточной квотой или закрытые
         self.min_interval = min_interval
         self.max_retries = max_retries
         self.calls = 0
@@ -66,7 +70,10 @@ class LLMClient:
         """
         hint = ""
         last_err: Exception | None = None
-        for attempt in range(1, self.max_retries + 1):
+        attempt = 0
+        while attempt < self.max_retries:
+            attempt += 1
+            used = self.model
             try:
                 self._throttle()
                 raw = self._call(system, user + hint, schema, effort)
@@ -80,6 +87,15 @@ class LLMClient:
             except Exception as e:  # сетевые/квотные ошибки провайдера
                 last_err = e
                 s = str(e)
+                if _model_unusable(s):
+                    # суточная квота исчерпана или модель закрыта — повторять бессмысленно, берём запасную
+                    if self._switch_model(used, s):
+                        attempt -= 1
+                        continue
+                    raise LLMError(
+                        f"Суточная квота исчерпана (или модель закрыта) у всех моделей: {', '.join(self.models)}. "
+                        "Подождите сброса квоты (у Google — в полночь по тихоокеанскому времени), "
+                        "добавьте запасные модели в GEMINI_FALLBACK_MODELS или используйте другой ключ.") from e
                 retryable = any(t in s for t in ("429", "RESOURCE_EXHAUSTED", "500", "502", "503", "504",
                                                   "UNAVAILABLE", "overloaded", "timeout", "Timeout"))
                 if not retryable or attempt == self.max_retries:
@@ -88,6 +104,35 @@ class LLMClient:
                 _log(f"  [{label}] {s[:120]} — повтор через {delay} с")
                 time.sleep(delay)
         raise LLMError(f"Не удалось получить валидный ответ ({label}): {last_err}")
+
+    def _switch_model(self, failed: str, reason: str) -> bool:
+        """Переключает клиент на следующую живую модель. False — запасных не осталось."""
+        with self._lock:
+            if self.model != failed:      # другой поток уже переключил — просто повторяем вызов
+                return True
+            self._dead.add(failed)
+            alive = [m for m in self.models if m not in self._dead]
+            if not alive:
+                return False
+            self.model = alive[0]
+            self.models_used.append(self.model)
+            _log(f"  модель {failed} недоступна ({_short_reason(reason)}) — переключаюсь на {self.model}")
+            return True
+
+
+def _model_unusable(s: str) -> bool:
+    """Ошибка не лечится повтором: исчерпана суточная квота либо модель закрыта для аккаунта."""
+    low = s.lower()
+    daily = "perday" in low.replace(" ", "").replace("_", "") or "per day" in low or "daily" in low
+    gone = "no longer available" in low or ("404" in s and "NOT_FOUND" in s)
+    return daily or gone
+
+
+def _short_reason(s: str) -> str:
+    low = s.lower()
+    if "no longer available" in low or "404" in s:
+        return "закрыта для аккаунта"
+    return "суточная квота исчерпана"
 
 
 def _strip_fence(s: str) -> str:
@@ -174,6 +219,10 @@ class AnthropicClient(LLMClient):
         raise json.JSONDecodeError("модель не вернула tool_use", "", 0)
 
 
+def _env_list(name: str) -> list[str]:
+    return [m.strip() for m in (os.getenv(name) or "").split(",") if m.strip()]
+
+
 def make_client(provider: str | None = None, model: str | None = None, min_interval: float | None = None) -> LLMClient:
     provider = (provider or os.getenv("LLM_PROVIDER") or "gemini").lower()
     if min_interval is None:
@@ -185,7 +234,8 @@ def make_client(provider: str | None = None, model: str | None = None, min_inter
         model = model or os.getenv("GEMINI_MODEL")
         if not model:
             raise LLMError("Не задана модель: GEMINI_MODEL в .env или --model")
-        return GeminiClient(model, key, min_interval=min_interval)
+        return GeminiClient(model, key, min_interval=min_interval,
+                            fallbacks=_env_list("GEMINI_FALLBACK_MODELS"))
     if provider == "anthropic":
         key = os.getenv("ANTHROPIC_API_KEY")
         if not key:
@@ -193,5 +243,6 @@ def make_client(provider: str | None = None, model: str | None = None, min_inter
         model = model or os.getenv("ANTHROPIC_MODEL")
         if not model:
             raise LLMError("Не задана модель: ANTHROPIC_MODEL в .env или --model")
-        return AnthropicClient(model, key, min_interval=min_interval)
+        return AnthropicClient(model, key, min_interval=min_interval,
+                               fallbacks=_env_list("ANTHROPIC_FALLBACK_MODELS"))
     raise LLMError(f"Неизвестный провайдер {provider!r} (gemini | anthropic)")

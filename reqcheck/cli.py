@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from . import __version__, pipeline, report
+from .conformance import check_report
 from .llm import LLMError, make_client
 from .loader import LoadError, load_document
 
@@ -29,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("output", nargs="?", default="report.md", help="путь к файлу отчёта (по умолчанию report.md)")
     ap.add_argument("--provider", help="gemini | anthropic (иначе LLM_PROVIDER из .env, по умолчанию gemini)")
     ap.add_argument("--model", help="имя модели (иначе GEMINI_MODEL / ANTHROPIC_MODEL из .env)")
-    ap.add_argument("--batch-size", type=int, default=6, help="сколько требований проверять за один вызов (6)")
+    ap.add_argument("--batch-size", type=int, default=10, help="сколько требований проверять за один вызов (10)")
     ap.add_argument("--workers", type=int, default=3, help="параллельных вызовов модели при проверке требований (3)")
     ap.add_argument("--no-verify", action="store_true", help="пропустить этап верификации дефектов")
     ap.add_argument("--min-interval", type=float, help="пауза между вызовами модели, с (для бесплатных лимитов)")
@@ -49,7 +50,10 @@ def main(argv: list[str] | None = None) -> int:
 
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(report.render(result), encoding="utf-8")
+    md = report.render(result)
+    out.write_text(md, encoding="utf-8")
+    for p in check_report(result, md):
+        print(f"Предупреждение (шаблон отчёта): {p}", file=sys.stderr)
     if args.json:
         Path(args.json).write_text(report.to_json(result), encoding="utf-8")
     print(f"Готово: {out} (требований: {len(result.reqs)}, дефектов: {len(result.active)}, "
