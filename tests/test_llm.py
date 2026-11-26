@@ -147,3 +147,18 @@ def test_overload_budget_is_limited():
     with pytest.raises(LLMError, match="перегружены"):
         c.generate("s", "u", ConclusionText)
     assert len(c.seen) == 6
+
+
+@pytest.mark.parametrize("msg", ["Server disconnected without sending a response.",
+                                 "[Errno 11001] getaddrinfo failed"])
+def test_network_glitches_are_retried(msg):
+    c = Scripted({"a": [Exception(msg), OK]}, model="a")
+    assert c.generate("s", "u", ConclusionText).rationale == "x"
+    assert c.seen == ["a", "a"]
+
+
+def test_os_error_and_httpx_errors_are_transient():
+    fake_httpx_error = type("RemoteProtocolError", (Exception,), {"__module__": "httpx"})   # httpx в окружении может не быть
+    c = Scripted({"a": [OSError("boom"), fake_httpx_error("x"), OK]}, model="a")
+    assert c.generate("s", "u", ConclusionText).rationale == "x"
+    assert c.seen == ["a", "a", "a"]

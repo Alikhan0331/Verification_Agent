@@ -148,10 +148,14 @@ def run_corpus(corpus: Path, results_dir: Path | None, run: bool, only: str | No
         rj = (results_dir or Path(".")) / f"{name}.json"
         if run:
             from . import pipeline, report
-            from .llm import make_client
+            from .llm import LLMError, make_client
             llm = make_client()
             print(f"== {name}: прогон агента ({llm.provider}/{llm.model})", file=sys.stderr)
-            res = pipeline.run(doc, llm, batch_size=batch_size, verify=verify, workers=workers)
+            try:
+                res = pipeline.run(doc, llm, batch_size=batch_size, verify=verify, workers=workers)
+            except (LLMError, RuntimeError) as e:     # не оцениваем по устаревшему результату прошлого прогона
+                print(f"== {name}: прогон не удался, документ пропущен: {str(e)[:200]}", file=sys.stderr)
+                continue
             rj.parent.mkdir(parents=True, exist_ok=True)
             (rj.parent / f"{name}.md").write_text(report.render(res), encoding="utf-8")
             rj.write_text(report.to_json(res), encoding="utf-8")

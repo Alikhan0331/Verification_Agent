@@ -192,12 +192,21 @@ def _is_overload(s: str) -> bool:
 
 _TRANSIENT_TOKENS = ("429", "RESOURCE_EXHAUSTED", "500", "502", "503", "504", "UNAVAILABLE", "overloaded",
                      "timeout", "Timeout", "timed out", "10053", "10054", "10060", "Connection", "connection",
-                     "RemoteProtocol", "ReadError", "ConnectError", "SSLError", "EOF occurred")
+                     "RemoteProtocol", "ReadError", "ConnectError", "SSLError", "EOF occurred", "disconnected",
+                     "getaddrinfo", "11001", "Name or service", "Temporary failure", "reset by peer",
+                     "Broken pipe")
+
+
+_NET_MODULES = ("httpx", "httpcore", "socket", "ssl", "urllib3", "requests", "aiohttp")
 
 
 def _is_transient(e: Exception, s: str) -> bool:
-    """Ошибка, которая лечится повтором: лимиты, перегрузка, сбой сервера, обрыв соединения."""
-    return isinstance(e, (ConnectionError, TimeoutError)) or any(t in s for t in _TRANSIENT_TOKENS)
+    """Ошибка, которая лечится повтором: лимиты, перегрузка, сбой сервера, обрыв соединения, сбой DNS."""
+    if isinstance(e, OSError):                       # ConnectionError, TimeoutError, socket.gaierror (DNS)…
+        return True
+    if type(e).__module__.split(".")[0] in _NET_MODULES:   # httpx.RemoteProtocolError, ReadTimeout и т. п.
+        return True
+    return any(t in s for t in _TRANSIENT_TOKENS)
 
 
 def _model_closed(s: str) -> bool:
