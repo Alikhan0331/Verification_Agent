@@ -71,6 +71,7 @@ class LLMClient:
         hint = ""
         last_err: Exception | None = None
         attempt = 0
+        overload_streak = 0
         while attempt < self.max_retries:
             attempt += 1
             used = self.model
@@ -93,13 +94,17 @@ class LLMClient:
                         attempt -= 1
                         continue
                     raise LLMError(
-                        f"Суточная квота исчерпана (или модель закрыта) у всех моделей: {', '.join(self.models)}. "
+                        f"Суточная квота исчерпана (или модель закрыта, либо перегружена) у всех моделей: {', '.join(self.models)}. "
                         "Подождите сброса квоты (у Google — в полночь по тихоокеанскому времени), "
                         "добавьте запасные модели в GEMINI_FALLBACK_MODELS или используйте другой ключ.") from e
-                retryable = any(t in s for t in ("429", "RESOURCE_EXHAUSTED", "500", "502", "503", "504",
-                                                  "UNAVAILABLE", "overloaded", "timeout", "Timeout"))
+                retryable = _is_transient(e, s)
                 if not retryable or attempt == self.max_retries:
                     raise LLMError(f"Ошибка провайдера {self.provider}: {s[:500]}") from e
+                overloaded = "503" in s or "UNAVAILABLE" in s or "overloaded" in s
+                overload_streak = overload_streak + 1 if overloaded else 0
+                if overload_streak >= OVERLOAD_SWITCH_AFTER and self._switch_model(used, "перегрузка"):
+                    overload_streak = 0      # модель перегружена надолго — не ждём, берём запасную
+                    continue
                 delay = min(5 * 2 ** (attempt - 1), 90)
                 _log(f"  [{label}] {s[:120]} — повтор через {delay} с")
                 time.sleep(delay)
@@ -120,6 +125,18 @@ class LLMClient:
             return True
 
 
+OVERLOAD_SWITCH_AFTER = 2      # столько подряд ответов 503 на одной модели — и переходим на запасную
+
+_TRANSIENT_TOKENS = ("429", "RESOURCE_EXHAUSTED", "500", "502", "503", "504", "UNAVAILABLE", "overloaded",
+                     "timeout", "Timeout", "timed out", "10053", "10054", "10060", "Connection", "connection",
+                     "RemoteProtocol", "ReadError", "ConnectError", "SSLError", "EOF occurred")
+
+
+def _is_transient(e: Exception, s: str) -> bool:
+    """Ошибка, которая лечится повтором: лимиты, перегрузка, сбой сервера, обрыв соединения."""
+    return isinstance(e, (ConnectionError, TimeoutError)) or any(t in s for t in _TRANSIENT_TOKENS)
+
+
 def _model_unusable(s: str) -> bool:
     """Ошибка не лечится повтором: исчерпана суточная квота либо модель закрыта для аккаунта."""
     low = s.lower()
@@ -128,10 +145,16 @@ def _model_unusable(s: str) -> bool:
     return daily or gone
 
 
+def reason_is_overload(s: str) -> bool:
+    return s == "перегрузка"
+
+
 def _short_reason(s: str) -> str:
     low = s.lower()
     if "no longer available" in low or "404" in s:
         return "закрыта для аккаунта"
+    if reason_is_overload(s):
+        return "перегружена"
     return "суточная квота исчерпана"
 
 

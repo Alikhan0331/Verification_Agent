@@ -74,3 +74,17 @@ def test_gives_up_after_max_retries_on_persistent_server_error():
     with pytest.raises(LLMError):
         c.generate("s", "u", ConclusionText)
     assert len(c.seen) == 3
+
+
+def test_connection_reset_is_retried():
+    reset = Exception("[WinError 10053] Программа на вашем хост-компьютере разорвала установленное подключение")
+    c = Scripted({"a": [reset, OK]}, model="a")
+    assert c.generate("s", "u", ConclusionText).rationale == "x"
+    assert c.seen == ["a", "a"]
+
+
+def test_persistent_overload_switches_to_fallback_quickly():
+    busy = Exception("503 UNAVAILABLE high demand")
+    c = Scripted({"a": busy, "b": OK}, model="a", fallbacks=["b"])
+    assert c.generate("s", "u", ConclusionText).rationale == "x"
+    assert c.seen == ["a", "a", "b"] and c.models_used == ["a", "b"]
