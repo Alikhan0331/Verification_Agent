@@ -30,11 +30,12 @@ class LLMClient:
     provider = "base"
 
     def __init__(self, model: str, min_interval: float = 0.0, max_retries: int = 5,
-                 fallbacks: list[str] | None = None, n_keys: int = 1):
+                 fallbacks: list[str] | None = None, n_keys: int = 1, max_overload: int = 16):
         self.model = model
         self.models = [model] + [m for m in (fallbacks or []) if m and m != model]
         self.models_used = [model]      # какие модели реально отвечали в этом прогоне
         self._dead: set[str] = set()    # модели с исчерпанной суточной квотой у всех ключей или закрытые
+        self.max_overload = max_overload   # сколько ответов 503 терпим за один вызов, прежде чем сдаться
         self.n_keys = max(n_keys, 1)    # ключей API (у каждого проекта своя квота); вызовы чередуются по кругу
         self._key_dead: set[tuple[str, int]] = set()   # (модель, номер ключа) с исчерпанной суточной квотой
         self._rr = 0
@@ -75,7 +76,7 @@ class LLMClient:
         hint = ""
         last_err: Exception | None = None
         attempt = 0
-        overload_streak = 0
+        overload_streak = overload_total = 0
         while attempt < self.max_retries:
             attempt += 1
             used = self.model
@@ -107,17 +108,45 @@ class LLMClient:
                         "Подождите сброса квоты (у Google — в полночь по тихоокеанскому времени), "
                         "добавьте запасные модели в GEMINI_FALLBACK_MODELS или используйте другой ключ.") from e
                 retryable = _is_transient(e, s)
+                if retryable and _is_overload(s):
+                    # перегрузка (503) временная: модели не списываем, у неё свой бюджет попыток.
+                    # Пробуем другую модель цепочки, при общей перегрузке ждём и возвращаемся по кругу.
+                    overload_total += 1
+                    if overload_total > self.max_overload:
+                        raise LLMError(f"Модели перегружены (503), {overload_total - 1} попыток подряд без ответа: "
+                                       f"{s[:300]}") from e
+                    attempt -= 1
+                    overload_streak += 1
+                    if overload_streak >= OVERLOAD_SWITCH_AFTER and self._rotate_model(used):
+                        overload_streak = 0
+                        time.sleep(2)
+                        continue
+                    delay = min(5 * 2 ** min(overload_total // 2, 4), 60)
+                    _log(f"  [{label}] перегрузка (503) — повтор через {delay} с")
+                    time.sleep(delay)
+                    continue
+                overload_streak = 0
                 if not retryable or attempt == self.max_retries:
                     raise LLMError(f"Ошибка провайдера {self.provider}: {s[:500]}") from e
-                overloaded = "503" in s or "UNAVAILABLE" in s or "overloaded" in s
-                overload_streak = overload_streak + 1 if overloaded else 0
-                if overload_streak >= OVERLOAD_SWITCH_AFTER and self._switch_model(used, "перегрузка"):
-                    overload_streak = 0      # модель перегружена надолго — не ждём, берём запасную
-                    continue
                 delay = min(5 * 2 ** (attempt - 1), 90)
                 _log(f"  [{label}] {s[:120]} — повтор через {delay} с")
                 time.sleep(delay)
         raise LLMError(f"Не удалось получить валидный ответ ({label}): {last_err}")
+
+    def _rotate_model(self, failed: str) -> bool:
+        """Перегрузка: переходим к следующей модели цепочки, не списывая текущую. False — другой модели нет."""
+        with self._lock:
+            if self.model != failed:
+                return True
+            cands = [m for m in self.models if m not in self._dead]
+            if len(cands) < 2:
+                return False
+            nxt = cands[(cands.index(failed) + 1) % len(cands)] if failed in cands else cands[0]
+            self.model = nxt
+            if nxt not in self.models_used:
+                self.models_used.append(nxt)
+            _log(f"  модель {failed} перегружена (503) — пробую {nxt}")
+            return True
 
     def _next_key(self, model: str) -> int:
         """Следующий живой ключ по кругу — вызовы чередуются между ключами."""
@@ -155,7 +184,11 @@ class LLMClient:
             return True
 
 
-OVERLOAD_SWITCH_AFTER = 2      # столько подряд ответов 503 на одной модели — и переходим на запасную
+OVERLOAD_SWITCH_AFTER = 2      # столько подряд ответов 503 на одной модели — и пробуем следующую модель цепочки
+
+
+def _is_overload(s: str) -> bool:
+    return "503" in s or "UNAVAILABLE" in s or "overloaded" in s
 
 _TRANSIENT_TOKENS = ("429", "RESOURCE_EXHAUSTED", "500", "502", "503", "504", "UNAVAILABLE", "overloaded",
                      "timeout", "Timeout", "timed out", "10053", "10054", "10060", "Connection", "connection",

@@ -70,7 +70,7 @@ def test_invalid_json_is_retried_with_hint():
 
 
 def test_gives_up_after_max_retries_on_persistent_server_error():
-    c = Scripted({"a": Exception("503 UNAVAILABLE high demand")}, model="a", max_retries=3)
+    c = Scripted({"a": Exception("500 INTERNAL server error")}, model="a", max_retries=3)
     with pytest.raises(LLMError):
         c.generate("s", "u", ConclusionText)
     assert len(c.seen) == 3
@@ -131,3 +131,19 @@ def test_all_keys_exhausted_then_model_switches():
     assert c.generate("s", "u", ConclusionText).rationale == "x"
     assert c.model == "b" and c.models_used == ["a", "b"]
     assert {k for m, k in c.seen if m == "a"} == {0, 1}          # перед сменой модели опробованы оба ключа
+
+
+def test_overload_rotates_models_without_killing_them_and_returns():
+    busy = Exception("503 UNAVAILABLE high demand")
+    c = Scripted({"a": [busy, busy, busy, busy, OK], "b": [busy, busy, busy, busy, busy]}, model="a",
+                 fallbacks=["b"], max_overload=10)
+    assert c.generate("s", "u", ConclusionText).rationale == "x"
+    assert not c._dead and set(c.seen) == {"a", "b"}            # обе модели живы, цепочка пройдена по кругу
+
+
+def test_overload_budget_is_limited():
+    c = Scripted({"a": Exception("503 UNAVAILABLE"), "b": Exception("503 UNAVAILABLE")}, model="a",
+                 fallbacks=["b"], max_overload=5)
+    with pytest.raises(LLMError, match="перегружены"):
+        c.generate("s", "u", ConclusionText)
+    assert len(c.seen) == 6
