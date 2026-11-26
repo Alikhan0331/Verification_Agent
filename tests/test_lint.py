@@ -66,3 +66,17 @@ def test_dangling_requirement_id_only_for_known_prefixes():
             "* **FR-4.** Система делает четвёртое действие.\n* **FR-5.** Система делает пятое действие.")
     refs = [f for f in lint(_doc(text)) if f.kind == "dangling_ref"]
     assert [f.quote for f in refs] == ["FR-9"]                # UTF-8 и AES-256 — не ссылки на требования
+
+
+def test_sum_error_and_missing_appendix_on_cashback_corpus():
+    found = lint(load_document(ROOT / "tests" / "corpus" / "cashback_accrual.md"))
+    ar = [f for f in found if f.kind == "arithmetic"]
+    assert len(ar) == 1 and "2 400 ₸ + 1 200 ₸ = 3 400 ₸" in ar[0].quote and "3 600" in ar[0].problem
+    ap = [f for f in found if f.kind == "dangling_ref" and "приложени" in f.quote]
+    assert len(ap) == 1 and "Б" in ap[0].problem
+
+
+def test_correct_sums_and_products_are_not_flagged():
+    text = ("# T\n## Цели\n* Цель один.\n## Расчёт\nПример: 2 400 ₸ + 1 200 ₸ = 3 600 ₸. Ещё: 1,5 + 2,5 = 4. "
+            "Формула: 10 + 5 = 15 × 2.\n* a один\n* b два\n* c три\n* d четыре\n* e пять")
+    assert [f for f in lint(_doc(text)) if f.kind == "arithmetic"] == []

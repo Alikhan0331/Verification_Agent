@@ -98,6 +98,8 @@ def lint(doc: Document) -> list[Finding]:
 
     out.extend(_security_gap(doc, heads))
     out.extend(_deferred_and_dangling(doc, heads))
+    out.extend(_appendix_refs(doc, heads))
+    out.extend(_sum_errors(doc))
     return out
 
 
@@ -107,6 +109,59 @@ DEFERRED = re.compile(
 SECTION_REF = re.compile(r"(?:раздел\w*|разд\.|пункт\w*|п\.)\s*(\d+(?:\.\d+)+)", re.IGNORECASE)
 HEAD_NUM = re.compile(r"^\s*(\d+(?:\.\d+)*)[.)]?\s")
 ID_TOKEN = re.compile(rf"(?<![\w-])({ID_CORE})(?![\w-])")
+
+
+APPENDIX_REF = re.compile(r"приложени\w*\s+([А-ЯA-Z])\b")
+NUM = r"\d{1,3}(?:[ \u00a0]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?"
+UNIT = r"(?:\s*(?:₸|тг\.?|тенге|руб\w*\.?|\$|€|%))?"
+SUM_EXPR = re.compile(rf"((?:{NUM}){UNIT}(?:\s*\+\s*(?:{NUM}){UNIT})+)\s*=\s*({NUM}){UNIT}(?![\d,.]*\s*[×x*/])")
+
+
+def _num(s: str) -> float:
+    return float(re.sub(r"[ \u00a0]", "", s).replace(",", "."))
+
+
+def _appendix_refs(doc: Document, heads) -> list[Finding]:
+    """«см. приложение Б», а такого приложения (заголовка или строки «Приложение Б») в документе нет."""
+    if not looks_structured(doc):
+        return []
+    have = {m.group(1) for ln in doc.lines
+            if (m := re.match(r"^\s*#*\s*\**\s*приложени\w*\s+([А-ЯA-Z])\b", ln, re.IGNORECASE))}
+    out: list[Finding] = []
+    seen: set[str] = set()
+    _, units = segment(doc)
+    for u in units:
+        for m in APPENDIX_REF.finditer(u.quote):
+            letter = m.group(1)
+            if letter in have or letter in seen:
+                continue
+            seen.add(letter)
+            phrase = m.group(0)
+            out.append(Finding(
+                "dangling_ref", "major", phrase, _line_of(doc, phrase, u.line_from, u.line_to), u.line_to,
+                f"Ссылка на приложение {letter}, которого в документе нет: содержимое, на которое опирается требование, "
+                "недоступно для разработки и проверки.",
+                f"Добавить приложение {letter} в документ либо перенести его содержимое в требования.",
+                criterion="S-TRA", dkind="traceability"))
+    return out
+
+
+def _sum_errors(doc: Document) -> list[Finding]:
+    """Простая арифметика в тексте: «a + b = c» с неверным итогом (примеры расчётов, критерии приёмки)."""
+    out: list[Finding] = []
+    for k, ln in enumerate(doc.lines):
+        for m in SUM_EXPR.finditer(ln):
+            parts = [_num(x) for x in re.findall(NUM, m.group(1))]
+            total = _num(m.group(2))
+            if len(parts) >= 2 and abs(sum(parts) - total) > 0.5:
+                right = f"{sum(parts):,.2f}".rstrip("0").rstrip(".").replace(",", " ")
+                out.append(Finding(
+                    "arithmetic", "major", m.group(0).strip(), k + 1, k + 1,
+                    f"Арифметическая ошибка в примере: сумма слагаемых равна {right}, а в тексте указано "
+                    f"{m.group(2).strip()}. Пример противоречит правилам расчёта и не может служить эталоном для тестов.",
+                    "Пересчитать пример по правилам документа и исправить итог либо уточнить правило.",
+                    criterion="S-CNS", dkind="contradiction"))
+    return out
 
 
 def _line_of(doc: Document, phrase: str, lo: int, hi: int) -> int:
