@@ -404,7 +404,7 @@ def _ask(doc, llm, result: RunResult, warnings: list[str]) -> list:
                     ids.append(x)
             text = " ".join(q.question.split())
             key = text.lower()
-            if not ids or len(text) < 15 or key in seen:
+            if not ids or len(text) < 15 or "?" not in text or key in seen:      # оборванные и не-вопросы не берём
                 continue
             seen.add(key)
             q.defect_ids, q.question = ids, text
