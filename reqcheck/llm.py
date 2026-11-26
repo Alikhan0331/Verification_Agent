@@ -256,7 +256,8 @@ class GeminiClient(LLMClient):
         except ImportError as e:  # pragma: no cover
             raise LLMError("Нужен пакет google-genai (pip install -r requirements.txt)") from e
         self._types = types
-        self._clients = [genai.Client(api_key=k) for k in keys]
+        timeout_ms = int(float(os.getenv("GEMINI_TIMEOUT_S", "240") or 240) * 1000)   # зависший запрос не должен висеть вечно
+        self._clients = [genai.Client(api_key=k, http_options=types.HttpOptions(timeout=timeout_ms)) for k in keys]
         self._thinking_ok = True  # станет False, если модель не принимает thinking_level
 
     def _config(self, system, schema, effort):
