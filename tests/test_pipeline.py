@@ -13,7 +13,8 @@ from reqcheck.criteria import REQ_CODES
 from reqcheck.grounding import Grounder
 from reqcheck.loader import LoadError, load_document
 from reqcheck.schemas import (ChecklistItem, ConclusionText, ConflictScanResult, CriterionVerdict, Decision,
-                              DuplicateGroup, DuplicateResult, FixItem, QuoteRef, RequirementBatchResult,
+                              DuplicateGroup, DuplicateResult, FixItem, Question, QuestionsResult, QuoteRef,
+                              RequirementBatchResult,
                               RequirementCheck, Segment, SegmentationResult, SetDefect, SetResult,
                               VerificationResult)
 
@@ -106,6 +107,19 @@ class FakeLLM:
         ids = re.findall(r"^- (D-\d+) \[\w+, COR\]", user, flags=re.M)
         return VerificationResult(decisions=[Decision(defect_id=i, keep=False, reason="не подтверждается") for i in ids])
 
+    def _QuestionsResult(self, user):
+        ids = re.findall(r"^- (D-\d+) \[", user, flags=re.M)
+        assert ids, user
+        # первый вопрос закрывает все дефекты, кроме последнего; последний — «добор»; ещё один — выдуманный D-номер
+        qs = [Question(defect_ids=ids[:-1] + ["D-888"], owner="analyst", blocking=True,
+                       question="Как совместить один push в месяц и повторный push после смены порога?",
+                       options=["Приоритет у Ф-3", "Приоритет у Ф-4", "  "]),
+              Question(defect_ids=["D-999"], owner="qa", blocking=False, question="Вопрос без настоящего дефекта?",
+                       options=[]),
+              Question(defect_ids=[ids[-1]], owner="architect", blocking=False, question="Как измерять минуту?",
+                       options=[])]
+        return QuestionsResult(questions=qs if len(ids) > 1 else qs[2:])
+
     def _ConclusionText(self, user):
         first = re.search(r"^- (D-\d+) \[critical", user, flags=re.M).group(1)
         return ConclusionText(rationale="Есть критичные дефекты.", top_fixes=[
@@ -182,8 +196,8 @@ def test_verdict_and_conclusion(result):
 def test_report_structure(result):
     md = report.render(result)
     for h in ("## 1. Паспорт прогона", "## 3. Как агент нарезал требования", "## 4. Проверка каждого требования",
-              "## 5. Проверка всего набора требований", "## 6. Сводка", "## 7. Итог",
-              "Приложение А", "Приложение Б"):
+              "## 5. Проверка всего набора требований", "## 6. Сводка",
+              "## 7. Уточняющие вопросы к автору документа", "## 8. Итог", "Приложение А", "Приложение Б"):
         assert h in md, h
     assert "| R-03 | Ф-4 |" in md and "fake-model" in md and "Уведомление о расходах по карте" in md
     assert "Выдуманная цитата" not in md.split("Приложение Б")[0]
@@ -203,7 +217,7 @@ def test_report_conformance_to_task_template(result):
 def test_conformance_detects_broken_report(result):
     from reqcheck.conformance import check_report
 
-    md = report.render(result).replace("## 7. Итог", "## Итоги").replace("Дата прогона", "Когда")
+    md = report.render(result).replace("## 8. Итог", "## Итоги").replace("Дата прогона", "Когда")
     problems = check_report(result, md)
     assert any("Итог" in p for p in problems) and any("Дата прогона" in p for p in problems)
 
@@ -244,3 +258,18 @@ def test_cli_end_to_end(tmp_path, monkeypatch):
     assert cli.main([str(DOC), str(out), "--json", str(js), "--batch-size", "3", "--workers", "2"]) == 0
     assert out.read_text(encoding="utf-8").startswith("# Отчёт о проверке требований") and js.exists()
     assert cli.main([str(tmp_path / "missing.md"), str(out)]) == 1
+
+
+def test_questions_are_grounded_covered_and_rendered(result):
+    active = {d.id for d in result.active}
+    must = {d.id for d in result.active if d.severity in ("critical", "major")}
+    assert result.questions
+    for q in result.questions:
+        assert q.defect_ids and all(x in active for x in q.defect_ids)       # выдуманные D-888 / D-999 отброшены
+        assert len(q.options) <= 3 and all(o.strip() for o in q.options)       # пустой вариант убран
+    assert not any("Вопрос без настоящего дефекта" in q.question for q in result.questions)
+    assert must <= {x for q in result.questions for x in q.defect_ids}         # покрыты все критичные и значительные
+    assert result.questions[0].blocking                                         # блокирующие — первыми
+    md = report.render(result)
+    assert "**Q-01**" in md and "Вариант А: Приоритет у Ф-3" in md and "адресат: аналитик" in md
+    assert report.to_json(result).count('"Q-01"') == 1

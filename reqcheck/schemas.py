@@ -110,6 +110,23 @@ class VerificationResult(BaseModel):
     decisions: list[Decision]
 
 
+# --- Этап 6. Уточняющие вопросы ------------------------------------------------
+Owner = Literal["owner", "analyst", "architect", "security", "qa"]
+
+
+class Question(BaseModel):
+    defect_ids: list[str] = Field(description="D-### дефектов, которые закроет ответ на этот вопрос")
+    owner: Owner = Field(description="Кто может ответить: owner — владелец продукта/бизнес, analyst — бизнес-аналитик, "
+                                     "architect — архитектор/разработка, security — безопасность, qa — тестирование")
+    question: str = Field(description="Один конкретный вопрос автору документа, на который можно ответить решением")
+    options: list[str] = Field(description="2–3 готовых варианта ответа (значение или формулировка) либо пустой список")
+    blocking: bool = Field(description="true — без ответа нельзя начать разработку или написать тест")
+
+
+class QuestionsResult(BaseModel):
+    questions: list[Question]
+
+
 # --- Этап 5. Итог ------------------------------------------------------------
 class FixItem(BaseModel):
     defect_ids: list[str] = Field(description="Идентификаторы дефектов D-###, которые закрывает это действие")

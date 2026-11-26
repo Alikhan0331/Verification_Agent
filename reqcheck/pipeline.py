@@ -25,7 +25,7 @@ from .criteria import REQ_CODES, SEVERITY_ORDER
 from .grounding import Grounder
 from .llm import LLMClient
 from .loader import Document
-from .schemas import (ConclusionText, ConflictScanResult, DuplicateResult, RequirementBatchResult,
+from .schemas import (ConclusionText, ConflictScanResult, DuplicateResult, QuestionsResult, RequirementBatchResult,
                       SegmentationResult, SetDefect, SetResult, VerificationResult)
 
 VERDICT_TEXT = {
@@ -33,7 +33,7 @@ VERDICT_TEXT = {
     "conditional": "УСЛОВНО — начинать можно только после устранения значительных дефектов",
     "yes": "ДА — документ пригоден для начала разработки и тестирования",
 }
-TOTAL_STEPS = 6
+TOTAL_STEPS = 7
 
 
 def _log(msg: str) -> None:
@@ -89,6 +89,7 @@ class RunResult:
     verdict: str
     warnings: list[str] = field(default_factory=list)
     meta: dict = field(default_factory=dict)
+    questions: list = field(default_factory=list)       # list[schemas.Question], по порядку отчёта
 
     @property
     def active(self) -> list[Defect]:
@@ -368,6 +369,75 @@ def _verify(doc, llm, defects: list[Defect], matrix: dict | None = None):
                 matrix[d.req_ids[0]][d.criterion] = "ok"
 
 
+# --- Этап 6: уточняющие вопросы автору документа --------------------------------
+QUESTION_CHUNK = 30
+
+
+def _where_of(d: Defect, reqs: dict[str, Req]) -> str:
+    if d.req_ids:
+        return ", ".join(f"{r}({reqs[r].doc_id})" if r in reqs and reqs[r].doc_id else r for r in d.req_ids)
+    return "набор в целом"
+
+
+def _ask(doc, llm, result: RunResult, warnings: list[str]) -> list:
+    """Формулирует уточняющие вопросы автору по критичным и значительным дефектам.
+
+    Каждый вопрос привязан к D-номерам; код проверяет покрытие и добирает вопросы по непокрытым дефектам.
+    Сбой этого этапа не отменяет отчёт: он остаётся без раздела вопросов, а причина попадает в предупреждения.
+    """
+    reqs = {r.id: r for r in result.reqs}
+    targets = [d for d in result.active if d.severity in ("critical", "major")]
+    if not targets:
+        return []
+    targets.sort(key=lambda d: (SEVERITY_ORDER[d.severity], d.id))
+    valid = {d.id: d for d in targets}
+    alias = {d.id: d.merged_into for d in result.defects if d.merged_into}
+    out: list = []
+    seen: set[str] = set()
+
+    def absorb(res) -> None:
+        for q in res.questions:
+            ids: list[str] = []
+            for x in q.defect_ids:
+                x = alias.get(x.strip(), x.strip())
+                if x in valid and x not in ids:
+                    ids.append(x)
+            text = " ".join(q.question.split())
+            key = text.lower()
+            if not ids or len(text) < 15 or key in seen:
+                continue
+            seen.add(key)
+            q.defect_ids, q.question = ids, text
+            q.options = [" ".join(o.split()) for o in q.options if o.strip()][:3]
+            out.append(q)
+
+    def ask(part: list[Defect], label: str) -> None:
+        view = [dict(id=d.id, severity=d.severity, criterion=d.criterion, where=_where_of(d, reqs),
+                     quotes=[q.text for q in d.quotes], problem=d.problem, recommendation=d.recommendation)
+                for d in part]
+        system, user = prompts.questions_prompt(view)
+        absorb(llm.generate(system, user, QuestionsResult, label, effort="medium"))
+
+    try:
+        for i in range(0, len(targets), QUESTION_CHUNK):
+            part = targets[i:i + QUESTION_CHUNK]
+            _log(f"[6/{TOTAL_STEPS}] Уточняющие вопросы по дефектам {part[0].id}…{part[-1].id}")
+            ask(part, "вопросы")
+        missed = [d for d in targets if not any(d.id in q.defect_ids for q in out)]
+        if missed:
+            _log(f"      без вопроса остались {len(missed)} дефектов — повторный запрос")
+            ask(missed[:QUESTION_CHUNK], "вопросы (добор)")
+    except Exception as e:                                   # noqa: BLE001 — отчёт важнее вопросов
+        warnings.append(f"Уточняющие вопросы не сформированы полностью: {type(e).__name__}: {str(e)[:200]}")
+    missed = [d.id for d in targets if not any(d.id in q.defect_ids for q in out)]
+    if missed:
+        warnings.append("Нет уточняющего вопроса по дефектам: " + ", ".join(missed))
+
+    order = {d.id: SEVERITY_ORDER[d.severity] for d in targets}
+    out.sort(key=lambda q: (not q.blocking, min(order[x] for x in q.defect_ids), q.defect_ids[0]))
+    return out
+
+
 # --- Итог --------------------------------------------------------------------
 def verdict_of(defects: list[Defect]) -> str:
     active = [d for d in defects if not d.rejected]
@@ -444,7 +514,9 @@ def run(doc: Document, llm: LLMClient, batch_size: int = 10, verify: bool = True
                        conclusion=None, verdict="yes", warnings=warnings)
     result.verdict = verdict_of(defects)
 
-    _log(f"[6/{TOTAL_STEPS}] Итог…")
+    result.questions = _ask(doc, llm, result, warnings)
+
+    _log(f"[7/{TOTAL_STEPS}] Итог…")
     result.conclusion = _conclude(doc, llm, result, warnings)
 
     result.meta = dict(

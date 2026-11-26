@@ -15,6 +15,8 @@ from .pipeline import VERDICT_TEXT, Defect, Quote, RunResult
 
 _MARK = {"ok": "✓", "violated": "✗", "na": "–", "?": "?"}
 _CHECKLIST_RU = {"yes": "Да", "partial": "Частично", "no": "Нет", "not_required": "Не требуется"}
+_OWNER_RU = {"owner": "владелец продукта", "analyst": "аналитик", "architect": "архитектор / разработка",
+             "security": "безопасность", "qa": "тестирование"}
 _KIND_RU = {"contradiction": "противоречие", "omission": "пропуск", "terminology": "терминология",
             "traceability": "прослеживаемость", "validation": "валидируемость", "other": "прочее",
             "requirement": "формулировка"}
@@ -258,8 +260,37 @@ def render(res: RunResult) -> str:
             add(f"- **{d.id}** ({where}, {_where(res, d.quotes[0])}): {d.problem}")
         add("")
 
-    # 7. Итог
-    add("## 7. Итог")
+    # 7. Уточняющие вопросы
+    add("## 7. Уточняющие вопросы к автору документа")
+    add("")
+    if res.questions:
+        add("Вопросы сформулированы по подтверждённым критичным и значительным дефектам: ответ автора документа "
+            "закрывает указанные дефекты. «Блокирует» — без ответа нельзя начать разработку или написать тест. "
+            "Варианты ответа — предложения агента, а не факты из документа.")
+        add("")
+        by_id = {d.id: d for d in res.defects}
+        for i, q in enumerate(res.questions, start=1):
+            first = by_id.get(q.defect_ids[0])
+            tag = "блокирует разработку и тестирование" if q.blocking else "не блокирует"
+            add(f"**Q-{i:02d}** · {tag} · адресат: {_OWNER_RU.get(q.owner, q.owner)} · закрывает: "
+                + ", ".join(q.defect_ids))
+            add("")
+            add(f"{q.question}")
+            add("")
+            for k, o in enumerate(q.options):
+                add(f"- Вариант {'АБВ'[k]}: {o}")
+            if first and first.quotes:
+                add("")
+                add(_quote_md(res, first.quotes[0]))
+            add("")
+    else:
+        add("Критичных и значительных дефектов, требующих ответа автора, нет." if not any(
+            d.severity in ("critical", "major") for d in active) else
+            "Вопросы не сформированы (причина — в приложении Б).")
+        add("")
+
+    # 8. Итог
+    add("## 8. Итог")
     add("")
     add(f"**Можно ли начинать разработку и тестирование: {VERDICT_TEXT[res.verdict]}.**")
     add("")
@@ -302,6 +333,7 @@ def to_json(res: RunResult) -> str:
         defects=[dataclasses.asdict(d) for d in res.defects],
         checklist=[c.model_dump() for c in res.checklist],
         conclusion=res.conclusion.model_dump() if res.conclusion else None,
+        questions=[dict(id=f"Q-{i:02d}", **q.model_dump()) for i, q in enumerate(res.questions, start=1)],
         warnings=res.warnings,
     )
     return json.dumps(data, ensure_ascii=False, indent=2)

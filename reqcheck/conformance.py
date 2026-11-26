@@ -16,7 +16,8 @@ REQUIRED_HEADINGS = [
     "## 4. Проверка каждого требования",
     "## 5. Проверка всего набора требований",
     "## 6. Сводка",
-    "## 7. Итог",
+    "## 7. Уточняющие вопросы к автору документа",
+    "## 8. Итог",
 ]
 PASSPORT_FIELDS = ["Проверяемый документ", "Дата прогона", "Модель", "Версия агента"]
 SUMMARY_FIELDS = ["Требований выделено", "Дефектов всего", "критичных"]
@@ -61,7 +62,18 @@ def check_report(res: RunResult, md: str) -> list[str]:
         if f not in summary:
             problems.append(f"в сводке нет «{f}»")
 
-    final = _section(md, "## 7. Итог")
+    must_ask = [d for d in res.active if d.severity in ("critical", "major")]
+    if must_ask and not res.questions:
+        problems.append("нет уточняющих вопросов автору документа")
+    covered = {x for q in res.questions for x in q.defect_ids}
+    for d in must_ask:
+        if res.questions and d.id not in covered:
+            problems.append(f"{d.id}: критичный или значительный дефект не покрыт уточняющим вопросом")
+    for i, q in enumerate(res.questions, start=1):
+        if f"**Q-{i:02d}**" not in md:
+            problems.append(f"Q-{i:02d}: вопрос не попал в отчёт")
+
+    final = _section(md, "## 8. Итог")
     if "Можно ли начинать разработку и тестирование" not in final:
         problems.append("в итоге нет ответа, можно ли начинать разработку и тестирование")
     if "первую очередь" not in final:
