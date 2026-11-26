@@ -290,6 +290,44 @@ architect (интеграция, ограничения, данные), security
     return SYSTEM, user
 
 
+def answers_prompt(numbered_doc: str, items: list[dict]) -> tuple[str, str]:
+    blocks = []
+    for it in items:
+        opts = "\n".join(f"    {'АБВ'[k]}) {o}" for k, o in enumerate(it["options"])) or "    (вариантов нет)"
+        defs = "\n".join(f"    - {d['id']} [{d['severity']}, {d['criterion']}]: {d['problem']} "
+                         f"(цитаты: {' | '.join('«' + ' '.join(q.split())[:160] + '»' for q in d['quotes'])})"
+                         for d in it["defects"])
+        blocks.append(f"{it['id']}. Вопрос: {it['question']}\n  Варианты:\n{opts}\n  ОТВЕТ АВТОРА: {it['answer']}\n"
+                      f"  Дефекты, которые должен закрыть ответ:\n{defs}")
+    user = f"""Автор документа ответил на уточняющие вопросы ревьюера. Оцени каждый ответ.
+
+ДОКУМЕНТ (с номерами строк):
+{numbered_doc}
+
+ВОПРОСЫ И ОТВЕТЫ:
+{chr(10).join(blocks)}
+
+ПРАВИЛА:
+1. closes — ответ конкретен и однозначен (значение, правило, граница, источник), его можно проверить тестом, \
+и если вставить его в документ, ВСЕ дефекты вопроса исчезнут. closed_defect_ids — все дефекты вопроса.
+2. partial — ответ закрывает лишь часть дефектов вопроса: в closed_defect_ids только они, в follow_up — что осталось \
+выяснить.
+3. insufficient — ТОЛЬКО если в ответе нет ни одного конкретного значения, правила или границы по вопросу: \
+«не знаю», «позже», «по усмотрению», «как обычно», ответ не по вопросу. closed_defect_ids = [], в follow_up — \
+более узкий вопрос. Если ответ даёт конкретные значения хотя бы по части вопроса (вопрос составной: сроки, \
+журнал, нагрузка и т. п.) — это partial, а не insufficient.
+4. contradicts — ответ конфликтует с другим местом документа (проверь числа, единицы, сроки, статусы, правила). \
+closed_defect_ids = []; conflict_quote — ДОСЛОВНАЯ цитата документа, с которой конфликт; conflict_problem — в чём \
+именно; follow_up — вопрос, как согласовать.
+5. Ответ вида «А», «Вариант Б», «первый» означает соответствующий вариант вопроса.
+6. proposed_text — одна-три готовых формулировки требования в стиле документа, которые автор может вставить, \
+с числами и условиями из ответа. Не добавляй фактов, которых в ответе нет. Для insufficient и contradicts — "".
+7. Если ответ порождает новое неоднозначное или непроверяемое требование — это insufficient.
+8. reason — 1–2 предложения. follow_up, conflict_quote, conflict_problem — пустые строки, если не нужны.
+9. Оцени КАЖДЫЙ вопрос из списка, question_id — как в списке (Q-NN)."""
+    return SYSTEM, user
+
+
 def conclusion_prompt(verdict_ru: str, stats: str, defects: list[dict]) -> tuple[str, str]:
     items = "\n".join(f"- {d['id']} [{d['severity']}, {d['criterion']}] {d['where']}: {d['problem']}"
                       for d in defects)

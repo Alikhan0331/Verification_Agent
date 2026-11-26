@@ -127,6 +127,22 @@ class QuestionsResult(BaseModel):
     questions: list[Question]
 
 
+# --- Режим ответов автора -------------------------------------------------------
+class AnswerAssessment(BaseModel):
+    question_id: str = Field(description="Q-NN вопроса, на который дан ответ")
+    verdict: Literal["closes", "partial", "insufficient", "contradicts"]
+    closed_defect_ids: list[str] = Field(description="D-### дефектов, которые ответ закрывает (для closes — все дефекты вопроса)")
+    reason: str = Field(description="1–2 предложения: почему такая оценка")
+    proposed_text: str = Field(description="Готовая формулировка требования для вставки в документ; \"\" если ответ не закрывает дефекты")
+    follow_up: str = Field(description="Новый, более узкий вопрос, если ответ не закрывает всё; иначе \"\"")
+    conflict_quote: str = Field(description="ДОСЛОВНАЯ цитата документа, с которой ответ конфликтует; иначе \"\"")
+    conflict_problem: str = Field(description="В чём конфликт ответа с документом; иначе \"\"")
+
+
+class AnswersResult(BaseModel):
+    assessments: list[AnswerAssessment]
+
+
 # --- Этап 5. Итог ------------------------------------------------------------
 class FixItem(BaseModel):
     defect_ids: list[str] = Field(description="Идентификаторы дефектов D-###, которые закрывает это действие")

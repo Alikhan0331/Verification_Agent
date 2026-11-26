@@ -17,6 +17,8 @@ _MARK = {"ok": "✓", "violated": "✗", "na": "–", "?": "?"}
 _CHECKLIST_RU = {"yes": "Да", "partial": "Частично", "no": "Нет", "not_required": "Не требуется"}
 _OWNER_RU = {"owner": "владелец продукта", "analyst": "аналитик", "architect": "архитектор / разработка",
              "security": "безопасность", "qa": "тестирование"}
+_VERDICT_RU = {"closes": "закрывает дефекты", "partial": "закрывает частично", "insufficient": "недостаточно",
+               "contradicts": "противоречит документу"}
 _KIND_RU = {"contradiction": "противоречие", "omission": "пропуск", "terminology": "терминология",
             "traceability": "прослеживаемость", "validation": "валидируемость", "other": "прочее",
             "requirement": "формулировка"}
@@ -105,6 +107,10 @@ def render(res: RunResult) -> str:
     add(f"| Время работы | {m['seconds']} с |")
     add(f"| Параметры | пачка проверки = {m['batch_size']}, потоков = {m.get('workers', 1)}, "
         f"верификация дефектов = {'вкл' if m['verify'] else 'выкл'} |")
+    if m.get("reply"):
+        rp = m["reply"]
+        add(f"| Ответы автора | учтено ответов: {rp['answered']}, закрыто дефектов: {rp['closed']}; "
+            f"разбор ответов: {_c(rp['model'])}, версия агента {_c(rp['agent_version'])} |")
     add("")
 
     # 2. Критерии
@@ -161,9 +167,12 @@ def render(res: RunResult) -> str:
         if d.scope == "req":
             req_defects.setdefault(d.req_ids[0], []).append(d)
     merged_refs: dict[str, list[Defect]] = {}
+    resolved_refs: dict[str, list[Defect]] = {}
     for d in res.defects:
         if d.merged_into and d.scope == "req":
             merged_refs.setdefault(d.req_ids[0], []).append(d)
+        elif d.resolved_by and not d.rejected and d.scope == "req":
+            resolved_refs.setdefault(d.req_ids[0], []).append(d)
     for r in res.reqs:
         ds = sorted(req_defects.get(r.id, []), key=lambda d: SEVERITY_ORDER[d.severity])
         title = f"#### {r.id}" + (f" ({r.doc_id})" if r.doc_id else "") + f" — {r.summary}"
@@ -172,9 +181,16 @@ def render(res: RunResult) -> str:
         add(f"> «{' '.join(r.quote.split())}» — {_where(res, Quote(r.quote, r.line_from, r.line_to))}")
         add("")
         refs = merged_refs.get(r.id, [])
-        if not ds and refs:
+        rs = resolved_refs.get(r.id, [])
+
+        def add_resolved():
+            for d in rs:
+                add(f"- **{d.id}** · {_crit(d.criterion)}: {d.problem} → закрыт ответом автора ({d.resolved_by})")
+
+        if not ds and (refs or rs):
             for d in refs:
                 add(f"- **{d.id}** · {_crit(d.criterion)}: {d.problem} → учтено в **{d.merged_into}** (см. ниже)")
+            add_resolved()
             add("")
             continue
         if not ds:
@@ -187,6 +203,7 @@ def render(res: RunResult) -> str:
             L.extend(_defect_md(res, d))
         for d in refs:
             add(f"- **{d.id}** · {_crit(d.criterion)}: {d.problem} → учтено в **{d.merged_into}** (см. ниже)")
+        add_resolved()
         add("")
 
     # 5. Набор
@@ -228,6 +245,9 @@ def render(res: RunResult) -> str:
     n_merged = sum(1 for d in res.defects if d.merged_into)
     if n_merged:
         add(f"| Объединено дублей | {n_merged} |")
+    n_resolved = sum(1 for d in res.defects if d.resolved_by and not d.rejected)
+    if n_resolved:
+        add(f"| Закрыто ответами автора | {n_resolved} |")
     add("")
     by_crit = Counter(d.criterion for d in active)
     if by_crit:
@@ -269,16 +289,33 @@ def render(res: RunResult) -> str:
             "Варианты ответа — предложения агента, а не факты из документа.")
         add("")
         by_id = {d.id: d for d in res.defects}
+        answered = {a["question_id"]: a for a in res.answers}
         for i, q in enumerate(res.questions, start=1):
             first = by_id.get(q.defect_ids[0])
             tag = "блокирует разработку и тестирование" if q.blocking else "не блокирует"
+            a = answered.get(f"Q-{i:02d}")
+            status = f" · ответ: {_VERDICT_RU[a['verdict']]}" if a else ""
             add(f"**Q-{i:02d}** · {tag} · адресат: {_OWNER_RU.get(q.owner, q.owner)} · закрывает: "
-                + ", ".join(q.defect_ids))
+                + ", ".join(q.defect_ids) + status)
             add("")
             add(f"{q.question}")
             add("")
             for k, o in enumerate(q.options):
                 add(f"- Вариант {'АБВ'[k]}: {o}")
+            if a:
+                add("")
+                add(f"**Ответ автора:** {' '.join(a['answer'].split())}")
+                add("")
+                add(f"**Оценка ответа:** {_VERDICT_RU[a['verdict']]}. {a['reason']}")
+                if a["closed_defect_ids"]:
+                    add("")
+                    add("Закрыто дефектов: " + ", ".join(a["closed_defect_ids"]))
+                if a.get("proposed_text"):
+                    add("")
+                    add("**Предлагаемая формулировка для документа:**")
+                    add("")
+                    for ln in a["proposed_text"].splitlines():
+                        add(f"> {ln}" if ln.strip() else ">")
             if first and first.quotes:
                 add("")
                 add(_quote_md(res, first.quotes[0]))
@@ -323,6 +360,17 @@ def render(res: RunResult) -> str:
         for w in res.warnings:
             add(f"- {w}")
         add("")
+    resolved = [d for d in res.defects if d.resolved_by and not d.rejected]
+    if resolved:
+        add("## Приложение В. Закрыто ответами автора")
+        add("")
+        add("Эти дефекты были подтверждены, но автор документа дал ответ, закрывающий их; в сводку и итог они не входят. "
+            "Чтобы закрытие стало окончательным, формулировки из ответов нужно внести в документ.")
+        add("")
+        for d in resolved:
+            add(f"- **{d.id}** · {_crit(d.criterion)} · {SEVERITY_RU[d.severity]}: {d.problem} "
+                f"— *закрыт ответом на {d.resolved_by}*")
+        add("")
     return "\n".join(L).rstrip() + "\n"
 
 
@@ -334,6 +382,7 @@ def to_json(res: RunResult) -> str:
         checklist=[c.model_dump() for c in res.checklist],
         conclusion=res.conclusion.model_dump() if res.conclusion else None,
         questions=[dict(id=f"Q-{i:02d}", **q.model_dump()) for i, q in enumerate(res.questions, start=1)],
+        answers=res.answers,
         warnings=res.warnings,
     )
     return json.dumps(data, ensure_ascii=False, indent=2)

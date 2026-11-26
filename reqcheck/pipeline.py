@@ -75,6 +75,7 @@ class Defect:
     reject_reason: str = ""
     merged_into: str = ""      # если дефект признан дублем — id дефекта, в который он влит
     source: str = ""           # "lint" — найден кодом (пустые разделы, заглушки); верификатор его не трогает
+    resolved_by: str = ""      # Q-NN — вопрос, ответом на который автор закрыл дефект (режим ответов)
 
 
 @dataclass
@@ -90,10 +91,11 @@ class RunResult:
     warnings: list[str] = field(default_factory=list)
     meta: dict = field(default_factory=dict)
     questions: list = field(default_factory=list)       # list[schemas.Question], по порядку отчёта
+    answers: list = field(default_factory=list)         # оценки ответов автора (режим ответов), словари
 
     @property
     def active(self) -> list[Defect]:
-        return [d for d in self.defects if not d.rejected]
+        return [d for d in self.defects if not d.rejected and not d.resolved_by]
 
 
 def agent_version() -> str:
@@ -440,7 +442,7 @@ def _ask(doc, llm, result: RunResult, warnings: list[str]) -> list:
 
 # --- Итог --------------------------------------------------------------------
 def verdict_of(defects: list[Defect]) -> str:
-    active = [d for d in defects if not d.rejected]
+    active = [d for d in defects if not d.rejected and not d.resolved_by]
     if any(d.severity == "critical" for d in active):
         return "no"
     if any(d.severity == "major" for d in active):
