@@ -134,7 +134,7 @@ def test_requirement_defects_grounded(result):
 
 
 def test_set_defects_and_dropped_hallucination(result):
-    contr = [d for d in result.active if d.kind == "contradiction"]
+    contr = [d for d in result.active if d.kind == "contradiction" and d.source != "lint"]
     assert len(contr) == 1                                                      # второй (из прохода противоречий) слит
     assert contr[0].req_ids == ["R-02", "R-03"]                                 # R-99 отфильтрован
     assert {q.line_from for q in contr[0].quotes} == {39, 40}

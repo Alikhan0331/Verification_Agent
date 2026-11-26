@@ -37,6 +37,7 @@ class Finding:
     recommendation: str
     criterion: str = "S-COM"
     dkind: str = "omission"
+    extra: tuple = ()     # дополнительные цитаты: ((текст, строка_от, строка_до), …)
 
 
 def lint(doc: Document) -> list[Finding]:
@@ -99,6 +100,7 @@ def lint(doc: Document) -> list[Finding]:
     out.extend(_security_gap(doc, heads))
     out.extend(_deferred_and_dangling(doc, heads))
     out.extend(_appendix_refs(doc, heads))
+    out.extend(_body_vs_content_type(doc, heads))
     out.extend(_sum_errors(doc))
     return out
 
@@ -143,6 +145,29 @@ def _appendix_refs(doc: Document, heads) -> list[Finding]:
                 "недоступно для разработки и проверки.",
                 f"Добавить приложение {letter} в документ либо перенести его содержимое в требования.",
                 criterion="S-TRA", dkind="traceability"))
+    return out
+
+
+CT_JSON = re.compile(r"content-type[\s:*_`'\"]*application/json", re.IGNORECASE)
+NO_BODY = re.compile(r"тел[оа]\s+(?:запроса\s+)?(?:не\s+используется|отсутствует|пустое|не\s+передаётся)|без\s+тела",
+                     re.IGNORECASE)
+
+
+def _body_vs_content_type(doc: Document, heads) -> list[Finding]:
+    """В одном разделе описания метода указан Content-Type: application/json, а тело запроса «не используется»."""
+    bounds = [i for i, _, _ in heads] + [len(doc.lines)]
+    out: list[Finding] = []
+    for a, b in zip(bounds, bounds[1:]):
+        ct = next((k for k in range(a, b) if CT_JSON.search(doc.lines[k])), None)
+        nb = next((k for k in range(a, b) if NO_BODY.search(doc.lines[k])), None)
+        if ct is not None and nb is not None:
+            out.append(Finding(
+                "api_inconsistency", "minor", doc.lines[ct].strip(), ct + 1, ct + 1,
+                "Указан Content-Type: application/json, но тело запроса не используется: заголовок и описание "
+                "противоречат друг другу, непонятно, что отправлять и что проверять.",
+                "Убрать Content-Type для запроса без тела либо описать тело запроса.",
+                criterion="S-CNS", dkind="contradiction",
+                extra=((doc.lines[nb].strip(), nb + 1, nb + 1),)))
     return out
 
 
@@ -227,8 +252,12 @@ def _security_gap(doc: Document, heads) -> list[Finding]:
     if anchor is None:
         return []
     i, title = anchor
+    claim = next(((k, ln.strip()) for k, ln in enumerate(doc.lines)
+                  if TABLE_ROW.match(ln) and re.search(r"безопасност", ln, re.IGNORECASE)), None)
+    extra = ((claim[1], claim[0] + 1, claim[0] + 1),) if claim else ()
     return [Finding(
         "no_security", "major", doc.lines[i].strip(), i + 1, i + 1,
         "В требованиях нет ничего о безопасности и защите данных: не заданы аутентификация и права доступа, "
         "защита и маскирование чувствительных данных (в том числе в уведомлениях и URL), журналирование и аудит действий.",
-        f"Добавить в раздел «{title}» требования информационной безопасности и аудита либо явно обосновать их отсутствие.")]
+        f"Добавить в раздел «{title}» требования информационной безопасности и аудита либо явно обосновать их отсутствие.",
+        extra=extra)]

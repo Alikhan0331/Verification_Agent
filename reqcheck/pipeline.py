@@ -270,7 +270,8 @@ def _lint_defects(doc, reqs=()) -> list[Defect]:
         if f.kind == "empty_field":
             continue
         rids = [r.id for r in reqs if r.line_from <= f.line_from <= r.line_to]
-        out.append(Defect("", "set", f.criterion, f.severity, f.dkind, rids[:1], [Quote(f.quote, f.line_from, f.line_to)],
+        quotes = [Quote(f.quote, f.line_from, f.line_to)] + [Quote(t, a, b) for t, a, b in f.extra]
+        out.append(Defect("", "set", f.criterion, f.severity, f.dkind, rids[:1], quotes,
                           f.problem, f.recommendation, source="lint"))
     if fields:
         names = "; ".join(f.problem.rstrip(".") for f in fields)

@@ -80,3 +80,11 @@ def test_correct_sums_and_products_are_not_flagged():
     text = ("# T\n## Цели\n* Цель один.\n## Расчёт\nПример: 2 400 ₸ + 1 200 ₸ = 3 600 ₸. Ещё: 1,5 + 2,5 = 4. "
             "Формула: 10 + 5 = 15 × 2.\n* a один\n* b два\n* c три\n* d четыре\n* e пять")
     assert [f for f in lint(_doc(text)) if f.kind == "arithmetic"] == []
+
+
+def test_security_gap_cites_review_checklist_claim_and_body_vs_content_type():
+    found = lint(load_document(ROOT / "docs" / "requirements.md"))
+    gap = next(f for f in found if f.kind == "no_security")
+    assert gap.extra and "безопасност" in gap.extra[0][0]               # строка чек-листа «рисков ИБ нет»
+    ct = [f for f in found if f.kind == "api_inconsistency"]
+    assert len(ct) == 1 and "Content-Type" in ct[0].quote and "не используется" in ct[0].extra[0][0]
