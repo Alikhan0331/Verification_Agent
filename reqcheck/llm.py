@@ -30,11 +30,15 @@ class LLMClient:
     provider = "base"
 
     def __init__(self, model: str, min_interval: float = 0.0, max_retries: int = 5,
-                 fallbacks: list[str] | None = None):
+                 fallbacks: list[str] | None = None, n_keys: int = 1):
         self.model = model
         self.models = [model] + [m for m in (fallbacks or []) if m and m != model]
         self.models_used = [model]      # какие модели реально отвечали в этом прогоне
-        self._dead: set[str] = set()    # модели с исчерпанной суточной квотой или закрытые
+        self._dead: set[str] = set()    # модели с исчерпанной суточной квотой у всех ключей или закрытые
+        self.n_keys = max(n_keys, 1)    # ключей API (у каждого проекта своя квота); вызовы чередуются по кругу
+        self._key_dead: set[tuple[str, int]] = set()   # (модель, номер ключа) с исчерпанной суточной квотой
+        self._rr = 0
+        self._tls = threading.local()   # номер ключа для текущего вызова (читает _call провайдера)
         self.min_interval = min_interval
         self.max_retries = max_retries
         self.calls = 0
@@ -75,6 +79,8 @@ class LLMClient:
         while attempt < self.max_retries:
             attempt += 1
             used = self.model
+            kidx = self._next_key(used)
+            self._tls.key = kidx
             try:
                 self._throttle()
                 raw = self._call(system, user + hint, schema, effort)
@@ -89,7 +95,10 @@ class LLMClient:
                 last_err = e
                 s = str(e)
                 if _model_unusable(s):
-                    # суточная квота исчерпана или модель закрыта — повторять бессмысленно, берём запасную
+                    if not _model_closed(s) and self._kill_key(used, kidx):
+                        attempt -= 1         # квота кончилась у одного ключа, другие ещё живы — повторяем другим
+                        continue
+                    # суточная квота исчерпана у всех ключей или модель закрыта — берём запасную модель
                     if self._switch_model(used, s):
                         attempt -= 1
                         continue
@@ -109,6 +118,27 @@ class LLMClient:
                 _log(f"  [{label}] {s[:120]} — повтор через {delay} с")
                 time.sleep(delay)
         raise LLMError(f"Не удалось получить валидный ответ ({label}): {last_err}")
+
+    def _next_key(self, model: str) -> int:
+        """Следующий живой ключ по кругу — вызовы чередуются между ключами."""
+        with self._lock:
+            alive = [i for i in range(self.n_keys) if (model, i) not in self._key_dead]
+            if not alive:
+                return 0
+            self._rr += 1
+            return alive[self._rr % len(alive)]
+
+    def _kill_key(self, model: str, kidx: int) -> bool:
+        """Ключ исчерпал суточную квоту на модель. True — у модели остались другие живые ключи."""
+        with self._lock:
+            if self.model != model:           # другой поток уже перешёл на запасную модель
+                return True
+            if (model, kidx) not in self._key_dead:
+                self._key_dead.add((model, kidx))
+                left = sum(1 for i in range(self.n_keys) if (model, i) not in self._key_dead)
+                if self.n_keys > 1:
+                    _log(f"  ключ №{kidx + 1}: суточная квота на {model} исчерпана, живых ключей: {left}")
+            return any((model, i) not in self._key_dead for i in range(self.n_keys))
 
     def _switch_model(self, failed: str, reason: str) -> bool:
         """Переключает клиент на следующую живую модель. False — запасных не осталось."""
@@ -135,6 +165,11 @@ _TRANSIENT_TOKENS = ("429", "RESOURCE_EXHAUSTED", "500", "502", "503", "504", "U
 def _is_transient(e: Exception, s: str) -> bool:
     """Ошибка, которая лечится повтором: лимиты, перегрузка, сбой сервера, обрыв соединения."""
     return isinstance(e, (ConnectionError, TimeoutError)) or any(t in s for t in _TRANSIENT_TOKENS)
+
+
+def _model_closed(s: str) -> bool:
+    low = s.lower()
+    return "no longer available" in low or ("404" in s and "NOT_FOUND" in s)
 
 
 def _model_unusable(s: str) -> bool:
@@ -170,15 +205,16 @@ def _strip_fence(s: str) -> str:
 class GeminiClient(LLMClient):
     provider = "gemini"
 
-    def __init__(self, model: str, api_key: str, **kw):
-        super().__init__(model, **kw)
+    def __init__(self, model: str, api_key: str | list[str], **kw):
+        keys = [api_key] if isinstance(api_key, str) else [k for k in api_key if k]
+        super().__init__(model, n_keys=len(keys), **kw)
         try:
             from google import genai
             from google.genai import types
         except ImportError as e:  # pragma: no cover
             raise LLMError("Нужен пакет google-genai (pip install -r requirements.txt)") from e
         self._types = types
-        self._client = genai.Client(api_key=api_key)
+        self._clients = [genai.Client(api_key=k) for k in keys]
         self._thinking_ok = True  # станет False, если модель не принимает thinking_level
 
     def _config(self, system, schema, effort):
@@ -191,14 +227,15 @@ class GeminiClient(LLMClient):
         return t.GenerateContentConfig(**kw)
 
     def _call(self, system, user, schema, effort=None):
+        client = self._clients[getattr(self._tls, "key", 0) % len(self._clients)]
         try:
-            resp = self._client.models.generate_content(
+            resp = client.models.generate_content(
                 model=self.model, contents=user, config=self._config(system, schema, effort))
         except Exception as e:
             if self._thinking_ok and "thinking" in str(e).lower() and "400" in str(e):
                 self._thinking_ok = False  # модель не поддерживает управление размышлениями — работаем без него
                 _log("  модель не принимает thinking_level — продолжаю без него")
-                resp = self._client.models.generate_content(
+                resp = client.models.generate_content(
                     model=self.model, contents=user, config=self._config(system, schema, effort))
             else:
                 raise
@@ -251,9 +288,10 @@ def make_client(provider: str | None = None, model: str | None = None, min_inter
     if min_interval is None:
         min_interval = float(os.getenv("LLM_MIN_INTERVAL", "0") or 0)
     if provider == "gemini":
-        key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        key = _env_list("GEMINI_API_KEYS") or [k for k in [os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")] if k]
         if not key:
             raise LLMError("Не задан GEMINI_API_KEY (см. README и .env.example)")
+        key = list(dict.fromkeys(key))       # одинаковые ключи — это одна квота, дубликаты не нужны
         model = model or os.getenv("GEMINI_MODEL")
         if not model:
             raise LLMError("Не задана модель: GEMINI_MODEL в .env или --model")

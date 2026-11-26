@@ -88,3 +88,46 @@ def test_persistent_overload_switches_to_fallback_quickly():
     c = Scripted({"a": busy, "b": OK}, model="a", fallbacks=["b"])
     assert c.generate("s", "u", ConclusionText).rationale == "x"
     assert c.seen == ["a", "a", "b"] and c.models_used == ["a", "b"]
+
+
+def test_keys_alternate_round_robin():
+    seen = []
+
+    class Rec(Scripted):
+        def _call(self, system, user, schema, effort):
+            seen.append(self._tls.key)
+            return OK
+
+    c = Rec({"a": OK}, model="a", n_keys=3)
+    for _ in range(6):
+        c.generate("s", "u", ConclusionText)
+    assert sorted(set(seen)) == [0, 1, 2] and all(seen.count(k) == 2 for k in (0, 1, 2))
+
+
+def test_exhausted_key_is_skipped_and_model_stays():
+    class PerKey(Scripted):
+        def _call(self, system, user, schema, effort):
+            self.seen.append((self.model, self._tls.key))
+            if self._tls.key == 1:
+                raise DAILY
+            return OK
+
+    c = PerKey({"a": OK, "b": OK}, model="a", fallbacks=["b"], n_keys=3)
+    for _ in range(6):
+        c.generate("s", "u", ConclusionText)
+    assert c.model == "a" and c.models_used == ["a"]
+    assert [k for m, k in c.seen].count(1) == 1                 # ключ 2 споткнулся один раз и выбыл
+
+
+def test_all_keys_exhausted_then_model_switches():
+    class Daily(Scripted):
+        def _call(self, system, user, schema, effort):
+            self.seen.append((self.model, self._tls.key))
+            if self.model == "a":
+                raise DAILY
+            return OK
+
+    c = Daily({"a": OK, "b": OK}, model="a", fallbacks=["b"], n_keys=2)
+    assert c.generate("s", "u", ConclusionText).rationale == "x"
+    assert c.model == "b" and c.models_used == ["a", "b"]
+    assert {k for m, k in c.seen if m == "a"} == {0, 1}          # перед сменой модели опробованы оба ключа
