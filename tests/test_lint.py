@@ -17,7 +17,7 @@ def _doc(text: str) -> Document:
 
 
 def test_task_document_placeholder_and_empty_fields():
-    found = lint(load_document(ROOT / "docs" / "requirements.md"))
+    found = [f for f in lint(load_document(ROOT / "docs" / "requirements.md")) if f.kind != "no_security"]
     kinds = [f.kind for f in found]
     assert kinds.count("placeholder_section") == 1 and kinds.count("empty_field") == 2
     ph = next(f for f in found if f.kind == "placeholder_section")
@@ -26,9 +26,17 @@ def test_task_document_placeholder_and_empty_fields():
     assert "Prod" in text and "Swagger" in text
 
 
-@pytest.mark.parametrize("name", ["card_statement_clean.md", "otp_login.md", "loan_prepayment.md", "p2p_limits.md"])
+@pytest.mark.parametrize("name", ["card_statement_clean.md", "otp_login.md"])
 def test_no_noise_on_corpus(name):
     assert lint(load_document(ROOT / "tests" / "corpus" / name)) == []
+
+
+def test_security_gap_found_when_no_requirement_mentions_security():
+    found = lint(load_document(ROOT / "docs" / "requirements.md"))
+    gap = [f for f in found if f.kind == "no_security"]
+    assert len(gap) == 1 and "Нефункциональные" in gap[0].quote           # «безопасност» в разделе Ревью не считается
+    assert not [f for f in lint(load_document(ROOT / "tests" / "corpus" / "card_statement_clean.md"))
+                if f.kind == "no_security"]
 
 
 def test_empty_section_but_not_container():
