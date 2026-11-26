@@ -52,7 +52,8 @@ def check_report(res: RunResult, md: str) -> list[str]:
             problems.append(f"{r.id}: нет в таблице нарезки")
         if f"#### {r.id}" not in checks:
             problems.append(f"{r.id}: нет в разделе проверки требований")
-        if not r.doc_id and r.quote.strip() and r.quote.strip()[:30] not in slicing.replace("\\|", "|"):
+        flat = " ".join(r.quote.split())
+        if not r.doc_id and flat and flat[:30] not in " ".join(slicing.replace("\\|", "|").split()):
             problems.append(f"{r.id}: у требования без номера в таблице нарезки нет цитаты")
 
     summary = _section(md, "## 6. Сводка")

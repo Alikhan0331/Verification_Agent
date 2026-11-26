@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import __version__, prompts, segmenter
+from . import __version__, lint, prompts, segmenter
 from .criteria import REQ_CODES, SEVERITY_ORDER
 from .grounding import Grounder
 from .llm import LLMClient
@@ -74,6 +74,7 @@ class Defect:
     rejected: bool = False
     reject_reason: str = ""
     merged_into: str = ""      # если дефект признан дублем — id дефекта, в который он влит
+    source: str = ""           # "lint" — найден кодом (пустые разделы, заглушки); верификатор его не трогает
 
 
 @dataclass
@@ -256,7 +257,27 @@ def _check_set(doc, llm, grounder, reqs, warnings):
         res, scan = f1.result(), f2.result()
     defects = _to_defects(res.defects, reqs, grounder, warnings, "Набор")
     defects += _to_defects(scan.defects, reqs, grounder, warnings, "Противоречия")
+    defects += _lint_defects(doc)
     return defects, res.checklist
+
+
+def _lint_defects(doc) -> list[Defect]:
+    """Дефекты шаблона, найденные кодом: пустые разделы, заглушки, незаполненные поля (одно на таблицу полей)."""
+    found = lint.lint(doc)
+    out: list[Defect] = []
+    fields = [f for f in found if f.kind == "empty_field"]
+    for f in found:
+        if f.kind == "empty_field":
+            continue
+        out.append(Defect("", "set", "S-COM", f.severity, "omission", [], [Quote(f.quote, f.line_from, f.line_to)],
+                          f.problem, f.recommendation, source="lint"))
+    if fields:
+        names = "; ".join(f.problem.rstrip(".") for f in fields)
+        out.append(Defect("", "set", "S-COM", "minor", "omission", [],
+                          [Quote(f.quote, f.line_from, f.line_to) for f in fields],
+                          "Не заполнены поля шаблона: " + names + ".",
+                          "Заполнить поля либо явно указать, что они не применимы.", source="lint"))
+    return out
 
 
 # --- Этап 4: дубли -------------------------------------------------------------
@@ -321,7 +342,7 @@ def _dedup(doc, llm, defects: list[Defect], warnings: list[str]) -> None:
 
 # --- Этап 5: верификация -------------------------------------------------------
 def _verify(doc, llm, defects: list[Defect], matrix: dict | None = None):
-    targets = [d for d in defects if not d.rejected and d.severity in ("critical", "major")]
+    targets = [d for d in defects if not d.rejected and d.severity in ("critical", "major") and d.source != "lint"]
     if not targets:
         return
     by_id = {d.id: d for d in defects}
