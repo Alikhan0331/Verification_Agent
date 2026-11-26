@@ -50,3 +50,19 @@ def test_tbd_section_and_legit_dash_in_other_tables():
             "## Общие\n| Поле | Значение |\n| :-- | :-- |\n| **Автор** | Иванов |\n| **URL** | — |")
     found = lint(_doc(text))
     assert sorted(f.kind for f in found) == ["empty_field", "placeholder_section"]   # тире в таблице ответа — норма
+
+
+def test_deferred_decision_and_dangling_section_reference():
+    found = lint(load_document(ROOT / "tests" / "corpus" / "loan_prepayment.md"))
+    by = {f.kind: f for f in found}
+    assert "определяется позже" in by["deferred"].quote and by["deferred"].line_from == 24
+    assert by["dangling_ref"].criterion == "S-TRA" and "7.3" in by["dangling_ref"].problem
+
+
+def test_dangling_requirement_id_only_for_known_prefixes():
+    text = ("# T\n## Цели\n* Цель один.\n## Функциональные требования\n"
+            "* **FR-1.** Система показывает сообщение из FR-9 и хранит данные в UTF-8 и AES-256.\n"
+            "* **FR-2.** Система делает второе действие.\n* **FR-3.** Система делает третье действие.\n"
+            "* **FR-4.** Система делает четвёртое действие.\n* **FR-5.** Система делает пятое действие.")
+    refs = [f for f in lint(_doc(text)) if f.kind == "dangling_ref"]
+    assert [f.quote for f in refs] == ["FR-9"]                # UTF-8 и AES-256 — не ссылки на требования

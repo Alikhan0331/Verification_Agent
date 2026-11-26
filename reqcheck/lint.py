@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 
 from .loader import Document
-from .segmenter import HEADING, TABLE_ROW, TABLE_SEP, _cells, _strip_md, looks_structured, segment
+from .segmenter import HEADING, ID_CORE, TABLE_ROW, TABLE_SEP, _cells, _strip_md, looks_structured, segment
 
 PLACEHOLDER_TEXT = re.compile(
     r"заполня(?:ю|е)тся|заполнит[ье]|не\s+заполнен|\btbd\b|\btba\b|будет\s+(?:добавлен|уточнен|определен)|"
@@ -35,6 +35,8 @@ class Finding:
     line_to: int
     problem: str
     recommendation: str
+    criterion: str = "S-COM"
+    dkind: str = "omission"
 
 
 def lint(doc: Document) -> list[Finding]:
@@ -95,6 +97,67 @@ def lint(doc: Document) -> list[Finding]:
         i = j
 
     out.extend(_security_gap(doc, heads))
+    out.extend(_deferred_and_dangling(doc, heads))
+    return out
+
+
+DEFERRED = re.compile(
+    r"[^,;.:]*\b(?:определя\w*\s+позже|определит\w*\s+позже|будет\s+(?:определен\w*|уточнен\w*|согласован\w*)|"
+    r"уточня\w*\s+позже|уточнит\w*\s+позже|определ\w+\s+в\s+дальнейшем|tbd|tbc)\b[^,;.]*", re.IGNORECASE)
+SECTION_REF = re.compile(r"(?:раздел\w*|разд\.|пункт\w*|п\.)\s*(\d+(?:\.\d+)+)", re.IGNORECASE)
+HEAD_NUM = re.compile(r"^\s*(\d+(?:\.\d+)*)[.)]?\s")
+ID_TOKEN = re.compile(rf"(?<![\w-])({ID_CORE})(?![\w-])")
+
+
+def _line_of(doc: Document, phrase: str, lo: int, hi: int) -> int:
+    for k in range(lo - 1, min(hi, len(doc.lines))):
+        if phrase in doc.lines[k]:
+            return k + 1
+    return lo
+
+
+def _deferred_and_dangling(doc: Document, heads) -> list[Finding]:
+    """Отложенные решения («определяется позже»), ссылки на несуществующие разделы и требования."""
+    if not looks_structured(doc):
+        return []
+    _, units = segment(doc)
+    out: list[Finding] = []
+    for u in units:
+        m = DEFERRED.search(u.quote)
+        if m:
+            phrase = m.group(0).strip(" *_`|")
+            out.append(Finding(
+                "deferred", "major", phrase, _line_of(doc, phrase, u.line_from, u.line_to), u.line_to,
+                f"Решение отложено: «{phrase}». Требование нельзя реализовать и проверить, пока значение не определено.",
+                "Зафиксировать значение (или правило его вычисления) сейчас либо вынести вопрос в открытые вопросы "
+                "с владельцем и сроком; до решения не считать требование готовым к разработке."))
+    numbers = {m.group(1) for _, _, t in heads if (m := HEAD_NUM.match(t))}
+    defined = {u.doc_id.replace("–", "-") for u in units if u.doc_id}
+    prefixes = {d.split("-")[0] for d in defined}
+    seen: set[str] = set()
+    for u in units:
+        for m in SECTION_REF.finditer(u.quote):
+            ref = m.group(1)
+            if ref in numbers or ref in seen:
+                continue
+            seen.add(ref)
+            phrase = u.quote[max(0, m.start() - 30):m.end()].strip(" *_`|")
+            phrase = phrase if phrase in doc.lines[u.line_from - 1] else m.group(0)
+            out.append(Finding(
+                "dangling_ref", "major", phrase, _line_of(doc, phrase, u.line_from, u.line_to), u.line_to,
+                f"Ссылка на раздел {ref}, которого в документе нет: порядок или правило, на которое ссылается требование, "
+                "нельзя найти и проверить.",
+                f"Добавить раздел {ref} либо исправить ссылку и привести правило в документ.",
+                criterion="S-TRA", dkind="traceability"))
+        for m in ID_TOKEN.finditer(u.quote):
+            tok = m.group(1).replace("–", "-")
+            if tok.split("-")[0] in prefixes and tok not in defined and tok not in seen:
+                seen.add(tok)
+                out.append(Finding(
+                    "dangling_ref", "major", tok, _line_of(doc, m.group(1), u.line_from, u.line_to), u.line_to,
+                    f"Ссылка на требование {tok}, которого в документе нет.",
+                    f"Исправить ссылку на {tok} или добавить недостающее требование.",
+                    criterion="S-TRA", dkind="traceability"))
     return out
 
 

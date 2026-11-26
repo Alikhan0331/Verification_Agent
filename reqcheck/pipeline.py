@@ -257,11 +257,11 @@ def _check_set(doc, llm, grounder, reqs, warnings):
         res, scan = f1.result(), f2.result()
     defects = _to_defects(res.defects, reqs, grounder, warnings, "Набор")
     defects += _to_defects(scan.defects, reqs, grounder, warnings, "Противоречия")
-    defects += _lint_defects(doc)
+    defects += _lint_defects(doc, reqs)
     return defects, res.checklist
 
 
-def _lint_defects(doc) -> list[Defect]:
+def _lint_defects(doc, reqs=()) -> list[Defect]:
     """Дефекты шаблона, найденные кодом: пустые разделы, заглушки, незаполненные поля (одно на таблицу полей)."""
     found = lint.lint(doc)
     out: list[Defect] = []
@@ -269,7 +269,8 @@ def _lint_defects(doc) -> list[Defect]:
     for f in found:
         if f.kind == "empty_field":
             continue
-        out.append(Defect("", "set", "S-COM", f.severity, "omission", [], [Quote(f.quote, f.line_from, f.line_to)],
+        rids = [r.id for r in reqs if r.line_from <= f.line_from <= r.line_to]
+        out.append(Defect("", "set", f.criterion, f.severity, f.dkind, rids[:1], [Quote(f.quote, f.line_from, f.line_to)],
                           f.problem, f.recommendation, source="lint"))
     if fields:
         names = "; ".join(f.problem.rstrip(".") for f in fields)
