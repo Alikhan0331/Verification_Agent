@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -62,6 +63,11 @@ def main(argv: list[str] | None = None) -> int:
                               segmentation=args.segmentation, set_passes=max(args.set_passes, 1))
     except (LoadError, LLMError, RuntimeError) as e:
         print(f"Ошибка: {e}", file=sys.stderr)
+        if os.getenv("REQCHECK_DEBUG"):      # полный стек и причина ошибки провайдера: $env:REQCHECK_DEBUG = "1"
+            import traceback
+            cause = e.__cause__ or e
+            traceback.print_exception(type(cause), cause, cause.__traceback__)
+            print("тело ответа:", getattr(cause, "body", None), file=sys.stderr)
         return 1
 
     out = Path(args.output)
