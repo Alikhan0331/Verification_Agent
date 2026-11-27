@@ -19,7 +19,7 @@ import re
 import sys
 from pathlib import Path
 
-from . import __version__, pipeline, prompts, report
+from . import __version__, pipeline, prompts, report, textout
 from .conformance import check_report
 from .grounding import Grounder
 from .llm import LLMError, make_client
@@ -251,13 +251,13 @@ def main(argv: list[str] | None = None) -> int:
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
     md = report.render(res)
-    out.write_text(md, encoding="utf-8")
+    saved = textout.save_report(out, md)
     for p in check_report(res, md):
         print(f"Предупреждение (шаблон отчёта): {p}", file=sys.stderr)
     if args.json:
         Path(args.json).write_text(report.to_json(res), encoding="utf-8")
     rp = res.meta["reply"]
-    print(f"Готово: {out} (ответов учтено: {rp['answered']}, закрыто дефектов: {rp['closed']}, "
+    print(f"Готово: {', '.join(str(p) for p in saved)} (ответов учтено: {rp['answered']}, закрыто дефектов: {rp['closed']}, "
           f"осталось: {len(res.active)}, вердикт: {pipeline.VERDICT_TEXT[res.verdict].split(' — ')[0]})", file=sys.stderr)
     return 0
 

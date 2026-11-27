@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import __version__, dialog, pipeline, report, setup
+from . import __version__, dialog, pipeline, report, setup, textout
 from .conformance import check_report
 from .llm import LLMError, make_client
 from .loader import LoadError, load_document
@@ -28,7 +28,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="reqcheck",
                                  description="Агент статической проверки документа с требованиями")
     ap.add_argument("input", help="путь к документу требований (.pdf, .md, .txt, .docx)")
-    ap.add_argument("output", nargs="?", default="report.md", help="путь к файлу отчёта (по умолчанию report.md)")
+    ap.add_argument("output", nargs="?", default="report.md", help="путь к файлу отчёта: .md или .txt (по умолчанию report.md; "
+                                                                  "для .md рядом сохраняется такая же копия в .txt)")
     ap.add_argument("--provider", help="gemini | anthropic (иначе LLM_PROVIDER из .env, по умолчанию gemini)")
     ap.add_argument("--model", help="имя модели (иначе GEMINI_MODEL / ANTHROPIC_MODEL из .env)")
     ap.add_argument("--batch-size", type=int, default=10, help="сколько требований проверять за один вызов (10)")
@@ -44,6 +45,7 @@ def main(argv: list[str] | None = None) -> int:
                          "(в живом терминале без этого флага агент спросит, отвечать ли на вопросы; "
                          "без терминала вопросы только записываются в отчёт)")
     ap.add_argument("--no-ask", action="store_true", help="не предлагать диалог с вопросами, даже в живом терминале")
+    ap.add_argument("--no-txt", action="store_true", help="не сохранять копию отчёта в .txt рядом с .md")
     ap.add_argument("--no-verify", action="store_true", help="пропустить этап верификации дефектов")
     ap.add_argument("--min-interval", type=float, help="пауза между вызовами модели, с (для бесплатных лимитов)")
     ap.add_argument("--json", metavar="PATH", help="дополнительно сохранить результат в JSON")
@@ -68,11 +70,11 @@ def main(argv: list[str] | None = None) -> int:
     if (not want_dialog and not args.no_ask and result.questions
             and sys.stdin is not None and sys.stdin.isatty() and sys.stdout.isatty()):
         # живой терминал: сначала сохраняем отчёт, затем предлагаем ответить на вопросы сразу
-        out.write_text(report.render(result), encoding="utf-8")
+        textout.save_report(out, report.render(result), not args.no_txt)
         want_dialog = dialog.offer(result)
     if want_dialog:
         # Сначала сохраняем отчёт без ответов: если опрос или оценка ответов прервутся, проверка не потеряна.
-        out.write_text(report.render(result), encoding="utf-8")
+        textout.save_report(out, report.render(result), not args.no_txt)
         try:
             result, given = dialog.run_dialog(result, llm)
         except (LLMError, RuntimeError) as e:
@@ -83,12 +85,12 @@ def main(argv: list[str] | None = None) -> int:
             ans_path.write_text(dialog.answers_markdown(given), encoding="utf-8")
             print(f"Ответы сохранены: {ans_path}", file=sys.stderr)
     md = report.render(result)
-    out.write_text(md, encoding="utf-8")
+    saved = textout.save_report(out, md, not args.no_txt)
     for p in check_report(result, md):
         print(f"Предупреждение (шаблон отчёта): {p}", file=sys.stderr)
     if args.json:
         Path(args.json).write_text(report.to_json(result), encoding="utf-8")
-    print(f"Готово: {out} (требований: {len(result.reqs)}, дефектов: {len(result.active)}, "
+    print(f"Готово: {', '.join(str(p) for p in saved)} (требований: {len(result.reqs)}, дефектов: {len(result.active)}, "
           f"вызовов модели: {llm.calls})", file=sys.stderr)
     return 0
 
