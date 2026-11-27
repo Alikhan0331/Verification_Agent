@@ -87,7 +87,8 @@ def test_explicit_provider_asks_only_for_the_key(env_file):
 
 
 def test_empty_key_changes_nothing(env_file):
-    got = setup.ensure_credentials(None, env_file, {}, lambda p: "1", lambda p: "   ", io.StringIO(), interactive=True)
+    got = setup.ensure_credentials(None, env_file, {}, lambda p: "1", lambda p: "   ", io.StringIO(), interactive=True,
+                                   visible_fn=lambda p: "")
     assert got == "gemini" and not env_file.exists()
 
 
@@ -131,9 +132,11 @@ def test_key_problem_catches_ctrl_v_and_garbage():
 def test_broken_key_in_env_is_not_a_key_and_user_is_asked_again(env_file):
     env = {"GEMINI_API_KEY": "▬"}
     assert not setup.has_key("gemini", env)
-    answers = iter(["\x16", "AIza-good-key-123"])                   # первая попытка — Ctrl+V, вторая — нормальный ключ
+    answers = iter(["\x16"])                                         # скрытый ввод принял Ctrl+V; обычный ввод даст ключ
+    _ = iter(["AIza-good-key-123"])                  # первая попытка — Ctrl+V, вторая — нормальный ключ
     out = io.StringIO()
-    got = setup.ensure_credentials(None, env_file, env, lambda p: "", lambda p: next(answers), out, interactive=True)
+    got = setup.ensure_credentials(None, env_file, env, lambda p: "", lambda p: next(answers), out, interactive=True,
+                                   visible_fn=lambda p: "AIza-good-key-123")
     assert got == "gemini" and env["GEMINI_API_KEY"] == "AIza-good-key-123"
     assert "Ключ не принят" in out.getvalue() and "правой кнопкой" in out.getvalue()
     assert "GEMINI_API_KEY=AIza-good-key-123" in env_file.read_text(encoding="utf-8").splitlines()
@@ -147,3 +150,14 @@ def test_make_client_reports_damaged_key_clearly(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "▬")
     with pytest.raises(llm.LLMError, match="повреждён"):
         llm.make_client("gemini")
+
+
+def test_hidden_input_fails_then_visible_input_works(env_file):
+    """Скрытое поле в консоли Windows не приняло вставку: агент предлагает обычный ввод, где Ctrl+V работает."""
+    env: dict[str, str] = {}
+    out = io.StringIO()
+    got = setup.ensure_credentials("gemini", env_file, env, _never, lambda p: "", out, interactive=True,
+                                   visible_fn=lambda p: "AIza-from-visible-123")
+    assert got == "gemini" and env["GEMINI_API_KEY"] == "AIza-from-visible-123"
+    assert "Ключ не введён" in out.getvalue()
+    assert "GEMINI_API_KEY=AIza-from-visible-123" in env_file.read_text(encoding="utf-8").splitlines()

@@ -99,7 +99,8 @@ def ensure_credentials(explicit: str | None = None, env_file: Path | None = None
                        environ: MutableMapping[str, str] | None = None,
                        input_fn: Callable[[str], str] = input,
                        secret_fn: Callable[[str], str] = getpass.getpass,
-                       out=None, interactive: bool | None = None) -> str:
+                       out=None, interactive: bool | None = None,
+                       visible_fn: Callable[[str], str] = input) -> str:
     """Возвращает провайдера; при отсутствии ключа в терминале спрашивает его и сохраняет в .env."""
     environ = os.environ if environ is None else environ
     out = out or sys.stderr
@@ -127,15 +128,25 @@ def ensure_credentials(explicit: str | None = None, env_file: Path | None = None
     key = ""
     for attempt in range(3):
         try:
-            key = secret_fn("Вставьте ключ и нажмите Enter (ввод скрыт): ").strip()
+            if attempt == 0:
+                key = secret_fn("Вставьте ключ и нажмите Enter (ввод скрыт): ").strip()
+            else:
+                # скрытое поле в консоли Windows плохо принимает вставку: пробуем обычный ввод, там Ctrl+V работает
+                key = visible_fn("Скрытый ввод не сработал. Введите ключ обычным вводом (он будет виден; "
+                                 "пустая строка — пропустить): ").strip()
         except (EOFError, KeyboardInterrupt):
             return provider
+        if attempt == 0 and not key:
+            print("Ключ не введён.", file=out)
+            continue
         if not key:
             return provider
         problem = key_problem(key)
         if problem is None:
             break
-        print(f"Ключ не принят: {problem}. {CTRL_V_HINT}", file=out)
+        print(f"Ключ не принят: {problem}.", file=out)
+        if attempt == 0:
+            print(CTRL_V_HINT, file=out)
         key = ""
     if not key:
         print("Ключ не введён. Его можно вписать в файл .env вручную (строка GEMINI_API_KEY= или ANTHROPIC_API_KEY=).",
