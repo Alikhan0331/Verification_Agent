@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import __version__, dialog, pipeline, report
+from . import __version__, dialog, pipeline, report, setup
 from .conformance import check_report
 from .llm import LLMError, make_client
 from .loader import LoadError, load_document
@@ -50,7 +50,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         doc = load_document(args.input)
-        llm = make_client(args.provider, args.model, args.min_interval)
+        provider = setup.ensure_credentials(args.provider)     # нет ключа: спросит в терминале и сохранит в .env
+        llm = make_client(provider, args.model, args.min_interval)
         print(f"Документ: {doc.name}, строк: {len(doc.lines)}. Модель: {llm.provider}/{llm.model}", file=sys.stderr)
         result = pipeline.run(doc, llm, batch_size=max(args.batch_size, 1),
                               verify=not args.no_verify, workers=max(args.workers, 1),

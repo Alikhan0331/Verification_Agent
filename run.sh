@@ -3,10 +3,14 @@
 #
 #   bash run.sh
 #
-# Скрипт сам создаёт окружение .venv, ставит зависимости, при первом запуске спрашивает ключ Gemini
-# и запускает проверку документа организаторов. Свой документ и параметры передаются аргументами:
+# Скрипт сам создаёт окружение .venv, ставит зависимости и запускает проверку документа организаторов.
+# Если ключа API нет ни в окружении, ни в .env, агент спросит, какую модель использовать
+# (Google Gemini или Anthropic Claude), попросит вставить ключ (ввод скрыт) и сохранит его в .env.
+#
+# Свой документ и параметры передаются аргументами:
 #
 #   bash run.sh путь/к/документу.docx отчёт.md --ask
+#   bash run.sh --provider anthropic
 #
 # Без аргументов: docs/requirements.md -> report.md.
 set -e
@@ -31,25 +35,7 @@ if [ ! -f .venv/.deps-ok ] || [ "$(cat .venv/.deps-ok)" != "$want" ]; then
     echo "$want" > .venv/.deps-ok
 fi
 
-# 3. Ключ: если его нет ни в окружении, ни в .env, спрашиваем один раз и сохраняем в .env
-[ -f .env ] || cp .env.example .env
-if [ -z "${GEMINI_API_KEY:-}${GEMINI_API_KEYS:-}${ANTHROPIC_API_KEY:-}" ] \
-   && ! grep -Eq '^(GEMINI_API_KEYS?|ANTHROPIC_API_KEY)=[[:space:]]*[^[:space:]]+' <(grep -v 'your_' .env); then
-    echo
-    echo "Нужен бесплатный ключ Gemini: https://aistudio.google.com/apikey (Create API key)."
-    read -r -p "Вставьте ключ и нажмите Enter: " key
-    [ -n "$key" ] || { echo "Ключ не введён."; exit 1; }
-    "$VPY" - "$key" <<'PYEOF'
-import re, sys
-key = sys.argv[1].strip()
-text = open(".env", encoding="utf-8").read()
-text = re.sub(r"(?m)^GEMINI_API_KEY=.*$", lambda m: "GEMINI_API_KEY=" + key, text, count=1)
-open(".env", "w", encoding="utf-8", newline="\n").write(text)
-PYEOF
-    echo "Ключ сохранён в .env."
-fi
-
-# 4. Запуск. Без аргументов проверяем документ организаторов; если первым идёт параметр (--ask), добавляем пути.
+# 3. Запуск. Без аргументов проверяем документ организаторов; если первым идёт параметр (--ask), добавляем пути.
 if [ "$#" -eq 0 ] || [ "${1#-}" != "$1" ]; then
     set -- docs/requirements.md report.md "$@"
 fi

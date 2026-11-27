@@ -110,7 +110,7 @@ class LLMClient:
                     raise LLMError(
                         f"Суточная квота исчерпана (или модель закрыта, либо перегружена) у всех моделей: {', '.join(self.models)}. "
                         "Подождите сброса квоты (у Google — в полночь по тихоокеанскому времени), "
-                        "добавьте запасные модели в GEMINI_FALLBACK_MODELS или используйте другой ключ.") from e
+                        f"добавьте запасные модели в {self.provider.upper()}_FALLBACK_MODELS или используйте другой ключ/модель.") from e
                 retryable = _is_transient(e, s)
                 if retryable and _is_overload(s):
                     # перегрузка (503) временная: модели не списываем, у неё свой бюджет попыток.
@@ -215,15 +215,14 @@ def _is_transient(e: Exception, s: str) -> bool:
 
 def _model_closed(s: str) -> bool:
     low = s.lower()
-    return "no longer available" in low or ("404" in s and "NOT_FOUND" in s)
+    return "no longer available" in low or ("404" in s and "not_found" in low)
 
 
 def _model_unusable(s: str) -> bool:
     """Ошибка не лечится повтором: исчерпана суточная квота либо модель закрыта для аккаунта."""
     low = s.lower()
     daily = "perday" in low.replace(" ", "").replace("_", "") or "per day" in low or "daily" in low
-    gone = "no longer available" in low or ("404" in s and "NOT_FOUND" in s)
-    return daily or gone
+    return daily or _model_closed(s)
 
 
 def reason_is_overload(s: str) -> bool:
@@ -295,6 +294,14 @@ class GeminiClient(LLMClient):
 
 
 class AnthropicClient(LLMClient):
+    """Claude через официальный SDK.
+
+    Основной режим: структурированный вывод (output_config.format, JSON-схема). У новых моделей (Opus 5.5, Sonnet 5.5,
+    Fable) принудительный tool_choice и параметр temperature отклоняются (400), поэтому их здесь нет.
+    Запасной режим: если API отверг саму схему (например, как слишком сложную), клиент переключается на вызов инструмента
+    submit_result с tool_choice=auto и дальше работает так.
+    """
+
     provider = "anthropic"
 
     def __init__(self, model: str, api_key: str, **kw):
@@ -303,27 +310,70 @@ class AnthropicClient(LLMClient):
             import anthropic
         except ImportError as e:  # pragma: no cover
             raise LLMError("Нужен пакет anthropic (pip install -r requirements.txt)") from e
+        self._anthropic = anthropic
         self._client = anthropic.Anthropic(api_key=api_key)
+        self._max_tokens = int(os.getenv("ANTHROPIC_MAX_TOKENS", "32000") or 32000)
+        self._effort_ok = True        # станет False, если модель не принимает output_config.effort
+        self._mode = "json"           # "json" — структурированный вывод; "tool" — запасной режим через инструмент
+
+    def _stream(self, system, user, cfg, **extra):
+        # стриминг: большой max_tokens без него упирается в таймаут HTTP-запроса
+        if cfg:
+            extra["output_config"] = cfg
+        with self._client.messages.stream(
+                model=self.model, max_tokens=self._max_tokens, system=system,
+                messages=[{"role": "user", "content": user}], **extra) as stream:
+            return stream.get_final_message()
+
+    def _run(self, system, user, cfg, effort, **extra):
+        """Один запрос; если модель не принимает effort, повторяет без него."""
+        cfg = dict(cfg)
+        level = (effort or os.getenv("ANTHROPIC_EFFORT") or "").strip().lower()
+        if level in ("low", "medium", "high", "xhigh", "max") and self._effort_ok:
+            cfg["effort"] = level
+        try:
+            return self._stream(system, user, cfg, **extra)
+        except self._anthropic.BadRequestError as e:
+            if "effort" in cfg and "effort" in str(e).lower():
+                self._effort_ok = False                 # старая модель без управления усилием — работаем без него
+                _log("  модель не принимает effort — продолжаю без него")
+                cfg.pop("effort")
+                return self._stream(system, user, cfg, **extra)
+            raise
 
     def _call(self, system, user, schema, effort=None):
-        msg = self._client.messages.create(
-            model=self.model,
-            max_tokens=16000,
-            temperature=0.1,
-            system=system,
-            messages=[{"role": "user", "content": user}],
-            tools=[{
-                "name": "submit_result",
-                "description": "Вернуть результат проверки строго по схеме.",
-                "input_schema": schema.model_json_schema(),
-            }],
-            tool_choice={"type": "tool", "name": "submit_result"},
-        )
+        if self._mode == "json":
+            try:
+                msg = self._run(system, user,
+                                {"format": {"type": "json_schema", "schema": self._anthropic.transform_schema(schema)}}, effort)
+            except self._anthropic.BadRequestError as e:
+                low = str(e).lower()
+                if not any(w in low for w in ("schema", "output_config", "structured", "too complex")):
+                    raise
+                self._mode = "tool"
+                _log("  API не принял схему структурированного вывода — перехожу на вызов инструмента")
+                return self._call(system, user, schema, effort)
+        else:
+            tool = {"name": "submit_result", "description": "Вернуть результат проверки строго по схеме.",
+                    "input_schema": schema.model_json_schema()}
+            msg = self._run(system + "\n\nОтвет верни только вызовом инструмента submit_result.", user, {}, effort,
+                            tools=[tool], tool_choice={"type": "auto"})
         self._add_usage(msg.usage.input_tokens, msg.usage.output_tokens)
+        if msg.stop_reason == "refusal":
+            raise LLMError("Модель отказалась отвечать (stop_reason=refusal)")
+        if msg.stop_reason == "max_tokens":
+            raise json.JSONDecodeError("ответ обрезан по max_tokens (увеличьте ANTHROPIC_MAX_TOKENS)", "", 0)
         for block in msg.content:
             if block.type == "tool_use":
                 return block.input
-        raise json.JSONDecodeError("модель не вернула tool_use", "", 0)
+        text = "".join(b.text for b in msg.content if b.type == "text")
+        if not text.strip():
+            raise json.JSONDecodeError("пустой ответ модели", "", 0)
+        return text
+
+
+DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5"             # основная модель Claude, если не задана ANTHROPIC_MODEL или --model
+DEFAULT_ANTHROPIC_FALLBACKS = ("claude-sonnet-5-5",)    # запасная при недоступности основной (ANTHROPIC_FALLBACK_MODELS)
 
 
 def _env_list(name: str) -> list[str]:
@@ -333,7 +383,9 @@ def _env_list(name: str) -> list[str]:
 def make_client(provider: str | None = None, model: str | None = None, min_interval: float | None = None) -> LLMClient:
     provider = (provider or os.getenv("LLM_PROVIDER") or "gemini").lower()
     if min_interval is None:
-        min_interval = float(os.getenv("LLM_MIN_INTERVAL", "0") or 0)
+        # паузу между вызовами задаём для бесплатного Gemini; у Claude отдельная настройка (по умолчанию без паузы)
+        var = "ANTHROPIC_MIN_INTERVAL" if provider == "anthropic" else "LLM_MIN_INTERVAL"
+        min_interval = float(os.getenv(var, "0") or 0)
     if provider == "gemini":
         key = _env_list("GEMINI_API_KEYS") or [k for k in [os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")] if k]
         if not key:
@@ -348,9 +400,8 @@ def make_client(provider: str | None = None, model: str | None = None, min_inter
         key = os.getenv("ANTHROPIC_API_KEY")
         if not key:
             raise LLMError("Не задан ANTHROPIC_API_KEY (см. README и .env.example)")
-        model = model or os.getenv("ANTHROPIC_MODEL")
-        if not model:
-            raise LLMError("Не задана модель: ANTHROPIC_MODEL в .env или --model")
-        return AnthropicClient(model, key, min_interval=min_interval,
-                               fallbacks=_env_list("ANTHROPIC_FALLBACK_MODELS"))
+        model = model or os.getenv("ANTHROPIC_MODEL") or DEFAULT_ANTHROPIC_MODEL
+        fallbacks = _env_list("ANTHROPIC_FALLBACK_MODELS") if os.getenv("ANTHROPIC_FALLBACK_MODELS") is not None \
+            else list(DEFAULT_ANTHROPIC_FALLBACKS)
+        return AnthropicClient(model, key, min_interval=min_interval, fallbacks=fallbacks)
     raise LLMError(f"Неизвестный провайдер {provider!r} (gemini | anthropic)")
