@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -442,6 +443,10 @@ def make_client(provider: str | None = None, model: str | None = None, min_inter
         if not key:
             raise LLMError("Не задан GEMINI_API_KEY (см. README и .env.example)")
         key = list(dict.fromkeys(key))       # одинаковые ключи — это одна квота, дубликаты не нужны
+        for k in key:                        # испорченный ключ даёт «400 Bad Request» или обрыв соединения без пояснений
+            if not re.fullmatch(r"[!-~]+", k):
+                raise LLMError("Ключ Gemini в .env повреждён: в нём недопустимые символы (длина %d). Откройте .env и вставьте "
+                               "ключ заново без пробелов; при вводе в терминале вставляйте правой кнопкой мыши, не Ctrl+V." % len(k))
         model = model or os.getenv("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL
         fallbacks = _env_list("GEMINI_FALLBACK_MODELS") if os.getenv("GEMINI_FALLBACK_MODELS") is not None             else list(DEFAULT_GEMINI_FALLBACKS)
         return GeminiClient(model, key, min_interval=min_interval, fallbacks=fallbacks)
@@ -449,6 +454,9 @@ def make_client(provider: str | None = None, model: str | None = None, min_inter
         key = os.getenv("ANTHROPIC_API_KEY")
         if not key:
             raise LLMError("Не задан ANTHROPIC_API_KEY (см. README и .env.example)")
+        if not re.fullmatch(r"[!-~]+", key):
+            raise LLMError("Ключ Anthropic повреждён: в нём недопустимые символы (длина %d). Вставьте его заново; "
+                           "при вводе в терминале вставляйте правой кнопкой мыши, не Ctrl+V." % len(key))
         model = model or os.getenv("ANTHROPIC_MODEL") or DEFAULT_ANTHROPIC_MODEL
         fallbacks = _env_list("ANTHROPIC_FALLBACK_MODELS") if os.getenv("ANTHROPIC_FALLBACK_MODELS") is not None \
             else list(DEFAULT_ANTHROPIC_FALLBACKS)

@@ -82,8 +82,8 @@ def test_default_choice_is_gemini_and_replaces_placeholder(env_file):
 
 
 def test_explicit_provider_asks_only_for_the_key(env_file):
-    got = setup.ensure_credentials("anthropic", env_file, {}, _never, lambda p: "sk-1", io.StringIO(), interactive=True)
-    assert got == "anthropic" and "ANTHROPIC_API_KEY=sk-1" in env_file.read_text(encoding="utf-8")
+    got = setup.ensure_credentials("anthropic", env_file, {}, _never, lambda p: "sk-ant-test-123456", io.StringIO(), interactive=True)
+    assert got == "anthropic" and "ANTHROPIC_API_KEY=sk-ant-test-123456" in env_file.read_text(encoding="utf-8")
 
 
 def test_empty_key_changes_nothing(env_file):
@@ -119,3 +119,31 @@ def test_gemini_model_has_defaults_without_env(monkeypatch):
     assert c.models[0] == llm.DEFAULT_GEMINI_MODEL and c.models[1:] == list(llm.DEFAULT_GEMINI_FALLBACKS)
     monkeypatch.setenv("GEMINI_FALLBACK_MODELS", "")                 # пусто — запасные отключены
     assert llm.make_client("gemini").models == [llm.DEFAULT_GEMINI_MODEL]
+
+
+def test_key_problem_catches_ctrl_v_and_garbage():
+    """Регрессия: Ctrl+V в скрытом поле сохранял в .env один символ «▬», и Gemini отвечал «400 Bad Request»."""
+    assert setup.key_problem("\x16") and setup.key_problem("▬") and setup.key_problem("ключ-кириллицей-1234567")
+    assert setup.key_problem("AIza SyA1234567890") and setup.key_problem("AIzaSyA\n1234567890") and setup.key_problem("abc")
+    assert setup.key_problem("AIzaSyA1234567890-abc_DEF.xyz") is None and setup.key_problem("sk-ant-api03-abcDEF123_-xyz") is None
+
+
+def test_broken_key_in_env_is_not_a_key_and_user_is_asked_again(env_file):
+    env = {"GEMINI_API_KEY": "▬"}
+    assert not setup.has_key("gemini", env)
+    answers = iter(["\x16", "AIza-good-key-123"])                   # первая попытка — Ctrl+V, вторая — нормальный ключ
+    out = io.StringIO()
+    got = setup.ensure_credentials(None, env_file, env, lambda p: "", lambda p: next(answers), out, interactive=True)
+    assert got == "gemini" and env["GEMINI_API_KEY"] == "AIza-good-key-123"
+    assert "Ключ не принят" in out.getvalue() and "правой кнопкой" in out.getvalue()
+    assert "GEMINI_API_KEY=AIza-good-key-123" in env_file.read_text(encoding="utf-8").splitlines()
+
+
+def test_make_client_reports_damaged_key_clearly(monkeypatch):
+    from reqcheck import llm
+
+    for v in ("GEMINI_API_KEYS", "GOOGLE_API_KEY"):
+        monkeypatch.delenv(v, raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "▬")
+    with pytest.raises(llm.LLMError, match="повреждён"):
+        llm.make_client("gemini")

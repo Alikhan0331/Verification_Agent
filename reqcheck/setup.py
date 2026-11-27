@@ -27,11 +27,27 @@ KEY_HELP = {
 _PLACEHOLDER = re.compile(r"^your_|_here$", re.I)
 
 
+MIN_KEY_LEN = 8
+CTRL_V_HINT = ("В скрытом поле Ctrl+V не вставляет, а вводит лишний символ. Вставьте ключ правой кнопкой мыши "
+               "(или Shift+Insert) и нажмите Enter.")
+
+
+def key_problem(key: str, check_len: bool = True) -> str | None:
+    """Почему ключ не может быть настоящим (None — форма в порядке). Ловит вставку Ctrl+V в скрытое поле,
+    пробелы, переносы, кириллицу и обрезанные ключи: с ними провайдер отвечает 400 или рвёт соединение."""
+    if not re.fullmatch(r"[!-~]+", key):
+        return "в ключе есть недопустимые символы (пробелы, переносы строк, не-латинские или управляющие знаки)"
+    if check_len and len(key) < MIN_KEY_LEN:
+        return f"ключ слишком короткий ({len(key)} зн.)"
+    return None
+
+
 def has_key(provider: str, environ: Mapping[str, str]) -> bool:
     for name in KEY_VARS.get(provider, ()):
-        v = (environ.get(name) or "").strip()
-        if v and not _PLACEHOLDER.search(v):
-            return True
+        for v in (environ.get(name) or "").split(","):
+            v = v.strip()
+            if v and not _PLACEHOLDER.search(v) and key_problem(v, check_len=False) is None:
+                return True
     return False
 
 
@@ -108,11 +124,22 @@ def ensure_credentials(explicit: str | None = None, env_file: Path | None = None
         provider = "anthropic" if ans.startswith("2") else "gemini"
     else:
         print(KEY_HELP.get(provider, provider), file=out)
-    try:
-        key = secret_fn("Вставьте ключ и нажмите Enter (ввод скрыт): ").strip()
-    except (EOFError, KeyboardInterrupt):
-        return provider
+    key = ""
+    for attempt in range(3):
+        try:
+            key = secret_fn("Вставьте ключ и нажмите Enter (ввод скрыт): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return provider
+        if not key:
+            return provider
+        problem = key_problem(key)
+        if problem is None:
+            break
+        print(f"Ключ не принят: {problem}. {CTRL_V_HINT}", file=out)
+        key = ""
     if not key:
+        print("Ключ не введён. Его можно вписать в файл .env вручную (строка GEMINI_API_KEY= или ANTHROPIC_API_KEY=).",
+              file=out)
         return provider
     updates = {WRITE_VAR[provider]: key, "LLM_PROVIDER": provider}
     set_env_values(env_file, updates)
