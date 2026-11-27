@@ -88,6 +88,9 @@ def ping_gemini(model: str) -> int:
     print(f"google-genai {getattr(g, '__version__', '?')}, модель {model}, ключей: {len(keys)}")
     proxies = [v for v in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY") if os.getenv(v)]
     print("прокси в окружении:", ", ".join(proxies) or "нет")
+    for i, k in enumerate(keys, 1):          # форма ключа: частая причина «400 Bad Request» — лишние символы при вставке
+        ok = bool(re.fullmatch(r"[A-Za-z0-9._-]+", k))
+        print(f"ключ №{i}: длина {len(k)}, начало «{k[:3]}», только допустимые символы: {'да' if ok else 'НЕТ (есть пробелы, кириллица или спецсимволы)'}")
     client = genai.Client(api_key=keys[0])
     bad = 0
 
