@@ -84,13 +84,28 @@ def ping_gemini(model: str) -> int:
     if not keys:
         print("Нет GEMINI_API_KEY (ни в окружении, ни в .env).")
         return 1
-    try:
-        r = genai.Client(api_key=keys[0]).models.generate_content(model=model, contents="ответь одним словом: да")
-        print(f"[gemini {model}] OK:", (r.text or "").strip())
-        return 0
-    except Exception as e:  # noqa: BLE001
-        print(f"[gemini {model}] ОШИБКА:", _clean(str(e))[:500])
-        return 1
+    import google.genai as g
+    print(f"google-genai {getattr(g, '__version__', '?')}, модель {model}, ключей: {len(keys)}")
+    proxies = [v for v in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY") if os.getenv(v)]
+    print("прокси в окружении:", ", ".join(proxies) or "нет")
+    client = genai.Client(api_key=keys[0])
+    bad = 0
+
+    def attempt(name, text):
+        nonlocal bad
+        try:
+            r = client.models.generate_content(model=model, contents=text)
+            print(f"[{name}] OK:", " ".join((r.text or "").split())[:40])
+        except Exception as e:  # noqa: BLE001
+            bad += 1
+            print(f"[{name}] ОШИБКА:", " ".join(_clean(f"{type(e).__name__}: {e}").split())[:300])
+
+    attempt("1. маленький запрос", "ответь одним словом: да")
+    for n in (10_000, 60_000, 150_000):        # агент шлёт документ целиком: проверяем, не рвёт ли сеть большие запросы
+        text = ("Прочитай и ответь одним словом: да. " + "лорем ипсум долор сит амет " * (n // 27))[:n]
+        attempt(f"2. большой запрос, {n // 1000} тыс. знаков", text)
+    print("Итог:", "всё работает" if not bad else f"не прошло запросов: {bad} из 4")
+    return 1 if bad else 0
 
 
 def main(argv: list[str] | None = None) -> int:
