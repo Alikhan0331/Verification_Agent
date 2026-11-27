@@ -250,16 +250,25 @@ def _to_defects(raw: list[SetDefect], reqs: list[Req], grounder: Grounder, warni
     return out
 
 
-def _check_set(doc, llm, grounder, reqs, warnings):
-    """Два независимых прохода по набору — общий и специальный (противоречия) — идут параллельно."""
+def _check_set(doc, llm, grounder, reqs, warnings, passes: int = 2):
+    """Два независимых прохода по набору — общий и специальный (противоречия) — идут параллельно.
+
+    Каждый проход повторяется `passes` раз (самосогласованность): одна выборка модели может пропустить
+    ключевое противоречие, объединение нескольких выборок это сглаживает; дубли склеивает шаг 4.
+    """
     sys1, user1 = prompts.set_check_prompt(doc.name, doc.numbered(), _req_view(reqs))
     sys2, user2 = prompts.conflict_scan_prompt(doc.name, doc.numbered(), _req_view(reqs))
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        f1 = pool.submit(llm.generate, sys1, user1, SetResult, "набор", "high")
-        f2 = pool.submit(llm.generate, sys2, user2, ConflictScanResult, "противоречия", "high")
-        res, scan = f1.result(), f2.result()
-    defects = _to_defects(res.defects, reqs, grounder, warnings, "Набор")
-    defects += _to_defects(scan.defects, reqs, grounder, warnings, "Противоречия")
+    passes = max(passes, 1)
+    with ThreadPoolExecutor(max_workers=2 * passes) as pool:
+        f1 = [pool.submit(llm.generate, sys1, user1, SetResult, "набор", "high") for _ in range(passes)]
+        f2 = [pool.submit(llm.generate, sys2, user2, ConflictScanResult, "противоречия", "high") for _ in range(passes)]
+        sets, scans = [f.result() for f in f1], [f.result() for f in f2]
+    res = sets[0]
+    defects: list[Defect] = []
+    for s in sets:
+        defects += _to_defects(s.defects, reqs, grounder, warnings, "Набор")
+    for sc in scans:
+        defects += _to_defects(sc.defects, reqs, grounder, warnings, "Противоречия")
     defects += _lint_defects(doc, reqs)
     return defects, res.checklist
 
@@ -484,7 +493,7 @@ def _conclude(doc, llm, result: RunResult, warnings):
 
 
 def run(doc: Document, llm: LLMClient, batch_size: int = 10, verify: bool = True, workers: int = 3,
-        segmentation: str = "auto") -> RunResult:
+        segmentation: str = "auto", set_passes: int = 2) -> RunResult:
     t0 = time.monotonic()
     warnings: list[str] = []
     grounder = Grounder(doc)
@@ -496,7 +505,7 @@ def run(doc: Document, llm: LLMClient, batch_size: int = 10, verify: bool = True
     matrix, req_defects = _check_requirements(doc, llm, grounder, reqs, batch_size, workers, warnings)
 
     _log(f"[3/{TOTAL_STEPS}] Проверка набора в целом и поиск противоречий…")
-    set_defects, checklist = _check_set(doc, llm, grounder, reqs, warnings)
+    set_defects, checklist = _check_set(doc, llm, grounder, reqs, warnings, set_passes)
 
     defects = req_defects + set_defects
     defects.sort(key=lambda d: (0 if d.scope == "req" else 1, d.req_ids[0] if d.req_ids else "~",
@@ -525,6 +534,7 @@ def run(doc: Document, llm: LLMClient, batch_size: int = 10, verify: bool = True
         provider=llm.provider, model=" → ".join(getattr(llm, "models_used", None) or [llm.model]), calls=llm.calls,
         input_tokens=llm.input_tokens, output_tokens=llm.output_tokens,
         seconds=round(time.monotonic() - t0, 1), batch_size=batch_size, workers=workers, verify=verify,
+        set_passes=set_passes,
         agent_version=agent_version(),
     )
     return result

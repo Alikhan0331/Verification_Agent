@@ -54,7 +54,7 @@ def _fill(tpl: str, answers: dict[str, str]) -> str:
 
 @pytest.fixture(scope="module")
 def base(tmp_path_factory):
-    res = pipeline.run(load_document(tp.DOC), tp.FakeLLM(), batch_size=2, workers=2, segmentation="llm")
+    res = pipeline.run(load_document(tp.DOC), tp.FakeLLM(), batch_size=2, workers=2, segmentation="llm", set_passes=1)
     p = tmp_path_factory.mktemp("rp") / "report.json"
     p.write_text(report.to_json(res), encoding="utf-8")
     return res, p

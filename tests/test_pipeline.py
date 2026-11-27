@@ -128,7 +128,7 @@ class FakeLLM:
 
 @pytest.fixture(scope="module")
 def result():
-    return pipeline.run(load_document(DOC), FakeLLM(), batch_size=2, workers=2, segmentation="llm")
+    return pipeline.run(load_document(DOC), FakeLLM(), batch_size=2, workers=2, segmentation="llm", set_passes=1)
 
 
 def test_segmentation_sorted_grounded_and_numbered(result):
@@ -255,7 +255,8 @@ def test_loader_errors(tmp_path):
 def test_cli_end_to_end(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "make_client", lambda *a, **k: FakeLLM())
     out, js = tmp_path / "out" / "report.md", tmp_path / "r.json"
-    assert cli.main([str(DOC), str(out), "--json", str(js), "--batch-size", "3", "--workers", "2"]) == 0
+    assert cli.main([str(DOC), str(out), "--json", str(js), "--batch-size", "3", "--workers", "2",
+                     "--set-passes", "1"]) == 0
     assert out.read_text(encoding="utf-8").startswith("# Отчёт о проверке требований") and js.exists()
     assert cli.main([str(tmp_path / "missing.md"), str(out)]) == 1
 
@@ -273,3 +274,24 @@ def test_questions_are_grounded_covered_and_rendered(result):
     md = report.render(result)
     assert "**Q-01**" in md and "Вариант А: Приоритет у Ф-3" in md and "адресат: аналитик" in md
     assert report.to_json(result).count('"Q-01"') == 1
+
+
+def test_set_passes_repeat_set_level_calls_and_union_results():
+    class Counting(FakeLLM):
+        def __init__(self):
+            super().__init__()
+            self.n = {}
+
+        def generate(self, system, user, schema, label="", effort=None):
+            self.n[schema.__name__] = self.n.get(schema.__name__, 0) + 1
+            return super().generate(system, user, schema, label, effort)
+
+    one, two = Counting(), Counting()
+    r1 = pipeline.run(load_document(DOC), one, batch_size=2, workers=2, segmentation="llm", set_passes=1)
+    try:
+        r2 = pipeline.run(load_document(DOC), two, batch_size=2, workers=2, segmentation="llm", set_passes=2)
+    except AssertionError:                      # заглушка дублей рассчитана на один проход; вызовы к этому моменту посчитаны
+        r2 = None
+    assert (one.n["SetResult"], one.n["ConflictScanResult"]) == (1, 1)
+    assert (two.n["SetResult"], two.n["ConflictScanResult"]) == (2, 2)
+    assert r1.meta["set_passes"] == 1

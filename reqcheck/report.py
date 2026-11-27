@@ -106,7 +106,7 @@ def render(res: RunResult) -> str:
     add(f"| Вызовов модели / токенов (вход+выход) | {m['calls']} / {m['input_tokens']}+{m['output_tokens']} |")
     add(f"| Время работы | {m['seconds']} с |")
     add(f"| Параметры | пачка проверки = {m['batch_size']}, потоков = {m.get('workers', 1)}, "
-        f"верификация дефектов = {'вкл' if m['verify'] else 'выкл'} |")
+        f"верификация дефектов = {'вкл' if m['verify'] else 'выкл'}, проходов проверки набора = {m.get('set_passes', 1)} |")
     if m.get("reply"):
         rp = m["reply"]
         add(f"| Ответы автора | учтено ответов: {rp['answered']}, закрыто дефектов: {rp['closed']}; "

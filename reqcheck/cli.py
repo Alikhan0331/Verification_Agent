@@ -35,6 +35,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--segmentation", choices=["auto", "rules", "llm"], default="auto",
                     help="нарезка на требования: auto — по разметке, если она есть, иначе моделью; "
                          "rules — только по разметке; llm — только моделью")
+    ap.add_argument("--set-passes", type=int, default=2,
+                    help="сколько раз независимо повторять проверку набора и поиск противоречий (2): "
+                         "объединение выборок снижает разброс между прогонами")
     ap.add_argument("--no-verify", action="store_true", help="пропустить этап верификации дефектов")
     ap.add_argument("--min-interval", type=float, help="пауза между вызовами модели, с (для бесплатных лимитов)")
     ap.add_argument("--json", metavar="PATH", help="дополнительно сохранить результат в JSON")
@@ -47,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Документ: {doc.name}, строк: {len(doc.lines)}. Модель: {llm.provider}/{llm.model}", file=sys.stderr)
         result = pipeline.run(doc, llm, batch_size=max(args.batch_size, 1),
                               verify=not args.no_verify, workers=max(args.workers, 1),
-                              segmentation=args.segmentation)
+                              segmentation=args.segmentation, set_passes=max(args.set_passes, 1))
     except (LoadError, LLMError, RuntimeError) as e:
         print(f"Ошибка: {e}", file=sys.stderr)
         return 1
