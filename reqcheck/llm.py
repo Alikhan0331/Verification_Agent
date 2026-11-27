@@ -26,6 +26,20 @@ class RefusalError(LLMError):
     """Модель отказалась отвечать (stop_reason=refusal у Claude): повтор и другая модель цепочки могут помочь."""
 
 
+def _err_text(e: Exception) -> str:
+    """Текст ошибки провайдера с причиной из тела ответа (у Claude str(e) бывает просто «Error code: 400»)."""
+    s = str(e)
+    body = getattr(e, "body", None)
+    err = body.get("error") if isinstance(body, dict) else None
+    msg = (err.get("message") if isinstance(err, dict) else None) or (body.get("message") if isinstance(body, dict) else None)
+    if msg and msg not in s:
+        s += f" — {msg}"
+    low = s.lower()
+    if "credit balance" in low:
+        s += " [Недостаточно средств на счёте Anthropic: пополните баланс в Billing]"
+    return s
+
+
 def _log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
@@ -121,7 +135,7 @@ class LLMClient:
                 _log(f"  [{label}] {used} отказалась отвечать — пробую {other[0]}")
             except Exception as e:  # сетевые/квотные ошибки провайдера
                 last_err = e
-                s = str(e)
+                s = _err_text(e)
                 if _model_unusable(s):
                     if not _model_closed(s) and self._kill_key(used, kidx):
                         attempt -= 1         # квота кончилась у одного ключа, другие ещё живы — повторяем другим

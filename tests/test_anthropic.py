@@ -194,3 +194,17 @@ def test_conflict_scan_prompt_for_claude_does_not_ask_to_show_reasoning():
     _, brief = prompts.conflict_scan_prompt("d", "1: текст", reqs, brief_notes=True)
     assert "пройди по шагам" in plain and "Покажи расчёт в analysis" in plain         # Gemini: прежний промпт
     assert "пройди по шагам" not in brief and "Покажи расчёт" not in brief
+
+
+def test_error_text_shows_reason_from_response_body(client):
+    class WithBody(anthropic.BadRequestError):
+        def __init__(self):
+            Exception.__init__(self, "Error code: 400")
+            self.body = {"type": "error", "error": {"type": "invalid_request_error",
+                                                   "message": "Your credit balance is too low to access the Anthropic API."}}
+
+    client.script = [WithBody()]
+    with pytest.raises(LLMError) as ei:
+        client.generate("s", "u", ConclusionText, "итог")
+    text = str(ei.value)
+    assert "credit balance is too low" in text and "Billing" in text
