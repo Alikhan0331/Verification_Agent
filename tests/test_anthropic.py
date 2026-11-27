@@ -208,3 +208,11 @@ def test_error_text_shows_reason_from_response_body(client):
         client.generate("s", "u", ConclusionText, "итог")
     text = str(ei.value)
     assert "credit balance is too low" in text and "Billing" in text
+
+
+def test_ping_without_key_reports_instead_of_crashing(monkeypatch, capsys):
+    from reqcheck import ping
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert ping.main(["--provider", "anthropic"]) == 1
+    assert "ANTHROPIC_API_KEY" in capsys.readouterr().out
