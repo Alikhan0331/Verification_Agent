@@ -93,8 +93,11 @@ def load_document(path: str | Path) -> Document:
     p = Path(path)
     if not p.is_file():
         raise LoadError(f"Файл не найден: {p}")
-    sha = hashlib.sha256(p.read_bytes()).hexdigest()
     ext = p.suffix.lower()
+    raw = p.read_bytes()
+    if ext in (".md", ".markdown", ".txt", ".text", ""):
+        raw = raw.replace(b"\r\n", b"\n")      # git на Windows меняет переводы строк: хеш не должен от этого зависеть
+    sha = hashlib.sha256(raw).hexdigest()
     pages: list[int | None]
     if ext in (".md", ".markdown", ".txt", ".text", ""):
         lines = _read_text_file(p)

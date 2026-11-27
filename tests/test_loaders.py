@@ -78,3 +78,10 @@ def test_docx_paragraphs_headings_and_tables(tmp_path):
     assert doc.lines[0] == "# Заголовок раздела"
     assert "Система должна уведомлять клиента." in doc.lines
     assert "| Порог | 1 000 |" in doc.lines
+
+
+def test_sha256_does_not_depend_on_line_endings(tmp_path):
+    lf, crlf = tmp_path / "a.md", tmp_path / "b.md"
+    lf.write_bytes("# Док\n* Система должна работать.\n".encode("utf-8"))
+    crlf.write_bytes("# Док\r\n* Система должна работать.\r\n".encode("utf-8"))
+    assert load_document(lf).sha256 == load_document(crlf).sha256

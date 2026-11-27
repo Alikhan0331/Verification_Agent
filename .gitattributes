@@ -1,0 +1,5 @@
+# Текстовые файлы хранятся с переводами строк LF (на Windows git иначе подменяет их на CRLF)
+*.md text eol=lf
+*.json text eol=lf
+*.py text eol=lf
+*.txt text eol=lf
