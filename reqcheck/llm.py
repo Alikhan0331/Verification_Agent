@@ -34,6 +34,7 @@ class LLMClient:
         self.model = model
         self.models = [model] + [m for m in (fallbacks or []) if m and m != model]
         self.models_used = [model]      # какие модели реально отвечали в этом прогоне
+        self.calls_by_model: dict[str, int] = {}   # сколько успешных ответов дала каждая модель
         self._dead: set[str] = set()    # модели с исчерпанной суточной квотой у всех ключей или закрытые
         self.max_overload = max_overload   # сколько ответов 503 терпим за один вызов, прежде чем сдаться
         self.n_keys = max(n_keys, 1)    # ключей API (у каждого проекта своя квота); вызовы чередуются по кругу
@@ -86,7 +87,10 @@ class LLMClient:
                 self._throttle()
                 raw = self._call(system, user + hint, schema, effort)
                 data = raw if isinstance(raw, dict) else json.loads(_strip_fence(raw))
-                return schema.model_validate(data)
+                parsed = schema.model_validate(data)
+                with self._lock:
+                    self.calls_by_model[used] = self.calls_by_model.get(used, 0) + 1
+                return parsed
             except (ValidationError, json.JSONDecodeError) as e:
                 last_err = e
                 _log(f"  [{label}] ответ не прошёл валидацию (попытка {attempt}): {str(e)[:200]}")

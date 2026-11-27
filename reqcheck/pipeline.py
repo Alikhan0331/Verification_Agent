@@ -532,6 +532,7 @@ def run(doc: Document, llm: LLMClient, batch_size: int = 10, verify: bool = True
 
     result.meta = dict(
         provider=llm.provider, model=" → ".join(getattr(llm, "models_used", None) or [llm.model]), calls=llm.calls,
+        models_calls=dict(getattr(llm, "calls_by_model", {}) or {}),
         input_tokens=llm.input_tokens, output_tokens=llm.output_tokens,
         seconds=round(time.monotonic() - t0, 1), batch_size=batch_size, workers=workers, verify=verify,
         set_passes=set_passes,

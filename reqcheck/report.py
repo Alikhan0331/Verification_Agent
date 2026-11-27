@@ -101,7 +101,14 @@ def render(res: RunResult) -> str:
     add(f"| SHA-256 документа | `{res.doc.sha256[:16]}…` |")
     add(f"| Строк в документе | {len(res.doc.lines)} |")
     add(f"| Дата прогона | {dt.datetime.now().strftime('%Y-%m-%d %H:%M')} |")
-    add(f"| Модель | {m['provider']} / `{m['model']}` |")
+    if m.get("models_calls"):
+        first = m["model"].split(" → ")[0]
+        per = ", ".join(f"`{k}` — {v}" for k, v in sorted(m["models_calls"].items(), key=lambda kv: -kv[1]))
+        extra = "" if len(m["models_calls"]) == 1 else (
+            "; запасные модели подключаются автоматически при суточном лимите или перегрузке бесплатного тарифа")
+        add(f"| Модель | {m['provider']} / основная `{first}`; полученные ответы по моделям: {per}{extra} |")
+    else:
+        add(f"| Модель | {m['provider']} / `{m['model']}` |")
     add(f"| Версия агента | {_c(m['agent_version'])} |")
     add(f"| Вызовов модели / токенов (вход+выход) | {m['calls']} / {m['input_tokens']}+{m['output_tokens']} |")
     add(f"| Время работы | {m['seconds']} с |")

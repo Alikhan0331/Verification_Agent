@@ -261,6 +261,17 @@ def test_cli_end_to_end(tmp_path, monkeypatch):
     assert cli.main([str(tmp_path / "missing.md"), str(out)]) == 1
 
 
+def test_passport_shows_answers_per_model():
+    class Two(FakeLLM):
+        calls_by_model = {"fake-model": 20, "fake-backup": 3}
+
+    res = pipeline.run(load_document(DOC), Two(), batch_size=2, workers=2, segmentation="llm", set_passes=1)
+    md = report.render(res)
+    assert "основная `fake-model`" in md and "`fake-model` — 20, `fake-backup` — 3" in md and "запасные модели" in md
+    assert [p for p in __import__("reqcheck.conformance", fromlist=["x"]).check_report(res, md)
+            if "версия агента" not in p] == []
+
+
 def test_questions_are_grounded_covered_and_rendered(result):
     active = {d.id for d in result.active}
     must = {d.id for d in result.active if d.severity in ("critical", "major")}
