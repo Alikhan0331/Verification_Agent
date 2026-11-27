@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import __version__, pipeline, report
+from . import __version__, dialog, pipeline, report
 from .conformance import check_report
 from .llm import LLMError, make_client
 from .loader import LoadError, load_document
@@ -16,6 +16,7 @@ def main(argv: list[str] | None = None) -> int:
     try:  # корректный вывод кириллицы в консоли Windows
         sys.stdout.reconfigure(encoding="utf-8")
         sys.stderr.reconfigure(encoding="utf-8")
+        sys.stdin.reconfigure(encoding="utf-8")      # ответы в диалоге --ask, в том числе поданные через пайп
     except Exception:
         pass
     try:
@@ -38,6 +39,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--set-passes", type=int, default=2,
                     help="сколько раз независимо повторять проверку набора и поиск противоречий (2): "
                          "объединение выборок снижает разброс между прогонами")
+    ap.add_argument("--ask", action="store_true",
+                    help="после проверки задать уточняющие вопросы в терминале и сразу учесть ответы автора "
+                         "(без флага агент только записывает вопросы в отчёт и не ждёт ввода)")
     ap.add_argument("--no-verify", action="store_true", help="пропустить этап верификации дефектов")
     ap.add_argument("--min-interval", type=float, help="пауза между вызовами модели, с (для бесплатных лимитов)")
     ap.add_argument("--json", metavar="PATH", help="дополнительно сохранить результат в JSON")
@@ -57,6 +61,18 @@ def main(argv: list[str] | None = None) -> int:
 
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
+    if args.ask:
+        # Сначала сохраняем отчёт без ответов: если опрос или оценка ответов прервутся, проверка не потеряна.
+        out.write_text(report.render(result), encoding="utf-8")
+        try:
+            result, given = dialog.run_dialog(result, llm)
+        except (LLMError, RuntimeError) as e:
+            print(f"Ошибка при оценке ответов: {e}. Отчёт без ответов сохранён: {out}", file=sys.stderr)
+            given = {}
+        if given:
+            ans_path = out.with_name(out.stem + ".answers.md")
+            ans_path.write_text(dialog.answers_markdown(given), encoding="utf-8")
+            print(f"Ответы сохранены: {ans_path}", file=sys.stderr)
     md = report.render(result)
     out.write_text(md, encoding="utf-8")
     for p in check_report(result, md):
