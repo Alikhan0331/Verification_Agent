@@ -20,6 +20,10 @@ def _show(e: Exception) -> str:
     resp = getattr(e, "response", None)
     raw = ""
     try:
+        resp.read()                       # у потокового ответа тело не прочитано, пока не попросишь
+    except Exception:
+        pass
+    try:
         raw = " ".join(str(resp.text).split())[:400]
     except Exception:
         pass
@@ -60,7 +64,16 @@ def ping_anthropic(model: str) -> int:
     attempt("2. потоковый запрос", stream)
     attempt("3. потоковый, формат и effort как у агента",
             lambda: stream(output_config={"format": {"type": "json_schema", "schema": schema}, "effort": "high"}))
-    print("Итог:", "всё работает" if not bad else f"не прошло запросов: {bad} из 3")
+    for n in (10_000, 60_000, 150_000):        # агент шлёт документ целиком: проверяем, не режет ли сеть большие запросы
+        text = ("Прочитай и ответь одним словом: да. " + "лорем ипсум долор сит амет " * (n // 27))[:n]
+
+        def big(text=text):
+            with c.messages.stream(model=model, max_tokens=300, messages=[{"role": "user", "content": text}]) as st:
+                m = st.get_final_message()
+            return f"stop={m.stop_reason}, токенов на входе {m.usage.input_tokens}"
+
+        attempt(f"4. большой запрос, {n // 1000} тыс. знаков", big)
+    print("Итог:", "всё работает" if not bad else f"не прошло запросов: {bad} из 6")
     return 1 if bad else 0
 
 

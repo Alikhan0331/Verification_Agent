@@ -36,6 +36,10 @@ def _err_text(e: Exception) -> str:
         s += f" — {msg}"
     if not msg:                      # тело не разобрано (не JSON): показываем сырой ответ, например страницу прокси
         try:
+            e.response.read()
+        except Exception:
+            pass
+        try:
             raw = " ".join(str(e.response.text).split())[:300]
         except Exception:
             raw = ""
