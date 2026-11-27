@@ -37,6 +37,20 @@ def _option_index(raw: str, n_options: int) -> int | None:
     return None
 
 
+def offer(res: RunResult, input_fn: Callable[[str], str] = input, out=None) -> bool:
+    """Предлагает ответить на вопросы сразу. Enter или «да» — начать; «н» / «n» или конец ввода — пропустить."""
+    out = out or sys.stdout
+    n = len(res.questions)
+    blocking = sum(1 for q in res.questions if q.blocking)
+    print(f"\nПроверка завершена, отчёт сохранён. Агент подготовил уточняющих вопросов: {n}"
+          f" (блокируют разработку: {blocking}).", file=out)
+    try:
+        ans = input_fn("Ответить на них сейчас в терминале? [Y/n]: ").strip().lower()
+    except EOFError:
+        return False
+    return not ans.startswith(("n", "н"))
+
+
 def collect_answers(res: RunResult, indexes: list[int], input_fn: Callable[[str], str] = input,
                     out=None) -> dict[str, str]:
     """Задаёт вопросы с номерами `indexes` (с нуля) и возвращает {Q-NN: ответ}."""

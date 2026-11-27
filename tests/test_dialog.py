@@ -87,3 +87,37 @@ def test_dialog_without_answers_changes_nothing():
     before = report.to_json(res)
     res2, given = dialog.run_dialog(res, ReplyLLM([]), _script("", "q"), io.StringIO())
     assert given == {} and report.to_json(res2) == before
+
+
+@pytest.mark.parametrize("answer,expected", [("", True), ("y", True), ("да", True), ("n", False), ("Н", False), ("нет", False)])
+def test_offer_asks_before_starting_the_dialog(answer, expected):
+    res = _fresh()
+    out = io.StringIO()
+    assert dialog.offer(res, lambda p: answer, out) is expected
+    assert f"вопросов: {len(res.questions)}" in out.getvalue() and "отчёт сохранён" in out.getvalue()
+
+
+def test_offer_without_input_means_no():
+    assert dialog.offer(_fresh(), _script(), io.StringIO()) is False        # конец ввода: не зависаем и не опрашиваем
+
+
+class _Tty(io.StringIO):
+    def isatty(self):
+        return True
+
+
+def test_cli_offers_dialog_only_in_a_live_terminal(tmp_path, monkeypatch):
+    import sys
+
+    from reqcheck import cli
+
+    monkeypatch.setattr(cli, "make_client", lambda *a, **k: tp.FakeLLM())
+    offered = []
+    monkeypatch.setattr(cli.dialog, "offer", lambda res: offered.append(len(res.questions)) or False)
+    argv = [str(tp.DOC), str(tmp_path / "r.md"), "--batch-size", "3", "--workers", "2", "--set-passes", "1"]
+
+    assert cli.main(argv) == 0 and offered == []                      # pytest: терминала нет, ничего не спрашиваем
+    monkeypatch.setattr(sys, "stdin", _Tty())
+    monkeypatch.setattr(sys, "stdout", _Tty())
+    assert cli.main(argv) == 0 and len(offered) == 1 and offered[0] >= 1   # живой терминал: предлагаем диалог
+    assert cli.main(argv + ["--no-ask"]) == 0 and len(offered) == 1        # --no-ask отключает предложение

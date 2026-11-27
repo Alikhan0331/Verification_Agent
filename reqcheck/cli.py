@@ -40,8 +40,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="сколько раз независимо повторять проверку набора и поиск противоречий (2): "
                          "объединение выборок снижает разброс между прогонами")
     ap.add_argument("--ask", action="store_true",
-                    help="после проверки задать уточняющие вопросы в терминале и сразу учесть ответы автора "
-                         "(без флага агент только записывает вопросы в отчёт и не ждёт ввода)")
+                    help="после проверки сразу задать уточняющие вопросы в терминале и учесть ответы автора "
+                         "(в живом терминале без этого флага агент спросит, отвечать ли на вопросы; "
+                         "без терминала вопросы только записываются в отчёт)")
+    ap.add_argument("--no-ask", action="store_true", help="не предлагать диалог с вопросами, даже в живом терминале")
     ap.add_argument("--no-verify", action="store_true", help="пропустить этап верификации дефектов")
     ap.add_argument("--min-interval", type=float, help="пауза между вызовами модели, с (для бесплатных лимитов)")
     ap.add_argument("--json", metavar="PATH", help="дополнительно сохранить результат в JSON")
@@ -62,7 +64,13 @@ def main(argv: list[str] | None = None) -> int:
 
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
-    if args.ask:
+    want_dialog = args.ask
+    if (not want_dialog and not args.no_ask and result.questions
+            and sys.stdin is not None and sys.stdin.isatty() and sys.stdout.isatty()):
+        # живой терминал: сначала сохраняем отчёт, затем предлагаем ответить на вопросы сразу
+        out.write_text(report.render(result), encoding="utf-8")
+        want_dialog = dialog.offer(result)
+    if want_dialog:
         # Сначала сохраняем отчёт без ответов: если опрос или оценка ответов прервутся, проверка не потеряна.
         out.write_text(report.render(result), encoding="utf-8")
         try:
