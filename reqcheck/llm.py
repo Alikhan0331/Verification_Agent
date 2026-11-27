@@ -372,6 +372,9 @@ class AnthropicClient(LLMClient):
         return text
 
 
+DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"                 # основная модель Gemini, если не задана GEMINI_MODEL или --model
+DEFAULT_GEMINI_FALLBACKS = ("gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-4-hydrogen",
+                            "gemini-3.5-flash-lite", "gemini-3.1-flash-lite")
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5"             # основная модель Claude, если не задана ANTHROPIC_MODEL или --model
 DEFAULT_ANTHROPIC_FALLBACKS = ("claude-sonnet-5-5",)    # запасная при недоступности основной (ANTHROPIC_FALLBACK_MODELS)
 
@@ -391,11 +394,9 @@ def make_client(provider: str | None = None, model: str | None = None, min_inter
         if not key:
             raise LLMError("Не задан GEMINI_API_KEY (см. README и .env.example)")
         key = list(dict.fromkeys(key))       # одинаковые ключи — это одна квота, дубликаты не нужны
-        model = model or os.getenv("GEMINI_MODEL")
-        if not model:
-            raise LLMError("Не задана модель: GEMINI_MODEL в .env или --model")
-        return GeminiClient(model, key, min_interval=min_interval,
-                            fallbacks=_env_list("GEMINI_FALLBACK_MODELS"))
+        model = model or os.getenv("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL
+        fallbacks = _env_list("GEMINI_FALLBACK_MODELS") if os.getenv("GEMINI_FALLBACK_MODELS") is not None             else list(DEFAULT_GEMINI_FALLBACKS)
+        return GeminiClient(model, key, min_interval=min_interval, fallbacks=fallbacks)
     if provider == "anthropic":
         key = os.getenv("ANTHROPIC_API_KEY")
         if not key:

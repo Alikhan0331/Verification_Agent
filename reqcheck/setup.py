@@ -65,6 +65,20 @@ def set_env_values(path: Path, updates: Mapping[str, str]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
 
 
+def _read_env(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return out
+    for line in text.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            out[k.strip()] = v.strip().strip("\"'")
+    return out
+
+
 def ensure_credentials(explicit: str | None = None, env_file: Path | None = None,
                        environ: MutableMapping[str, str] | None = None,
                        input_fn: Callable[[str], str] = input,
@@ -104,5 +118,7 @@ def ensure_credentials(explicit: str | None = None, env_file: Path | None = None
     set_env_values(env_file, updates)
     for k, v in updates.items():
         environ[k] = v
+    for k, v in _read_env(env_file).items():          # остальные настройки из .env (модель, паузы) действуют сразу
+        environ.setdefault(k, v)
     print("Ключ сохранён в .env (в репозиторий он не попадает).", file=out)
     return provider

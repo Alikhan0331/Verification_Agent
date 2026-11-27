@@ -96,3 +96,26 @@ def test_set_env_values_updates_existing_file_in_place(tmp_path):
     p.write_text("A=1\n# B=old\nC=3\n", encoding="utf-8")
     setup.set_env_values(p, {"B": "2", "D": "4"})
     assert p.read_text(encoding="utf-8") == "A=1\nB=2\nC=3\nD=4\n"
+
+
+def test_other_env_settings_apply_right_after_first_launch(env_file):
+    """Регрессия: после ввода ключа в .env попадали модель и паузы, но в текущем запуске они не действовали
+    («Не задана модель: GEMINI_MODEL»)."""
+    from reqcheck import llm
+
+    env: dict[str, str] = {}
+    setup.ensure_credentials(None, env_file, env, lambda p: "", lambda p: "AIza-test", io.StringIO(), interactive=True)
+    assert env["GEMINI_MODEL"] == "gemini-3.8-flash" and env["LLM_MIN_INTERVAL"] == "3"
+    assert "# ANTHROPIC_MODEL" not in env and "ANTHROPIC_MODEL" not in env
+
+
+def test_gemini_model_has_defaults_without_env(monkeypatch):
+    from reqcheck import llm
+
+    for v in ("GEMINI_MODEL", "GEMINI_FALLBACK_MODELS", "GEMINI_API_KEYS", "GOOGLE_API_KEY"):
+        monkeypatch.delenv(v, raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    c = llm.make_client("gemini")
+    assert c.models[0] == llm.DEFAULT_GEMINI_MODEL and c.models[1:] == list(llm.DEFAULT_GEMINI_FALLBACKS)
+    monkeypatch.setenv("GEMINI_FALLBACK_MODELS", "")                 # пусто — запасные отключены
+    assert llm.make_client("gemini").models == [llm.DEFAULT_GEMINI_MODEL]
