@@ -1,4 +1,4 @@
-﻿﻿# Запуск агента одной командой (Windows PowerShell).
+﻿# Запуск агента одной командой (Windows PowerShell).
 #
 #   powershell -ExecutionPolicy Bypass -File .\run.ps1
 #
