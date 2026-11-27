@@ -173,7 +173,9 @@ justification — одно-два предложения со ссылкой н�
 
 
 # --- Этап 3б: охота за противоречиями ------------------------------------------
-def conflict_scan_prompt(name: str, numbered: str, all_reqs: list[dict]) -> tuple[str, str]:
+def conflict_scan_prompt(name: str, numbered: str, all_reqs: list[dict], brief_notes: bool = False) -> tuple[str, str]:
+    """brief_notes: для Claude. Просьба выписать пошаговые рассуждения в analysis вызывает у него отказ
+    (stop_reason=refusal, защита от извлечения рассуждений), поэтому там просим только краткий перечень."""
     overview = "\n".join(f"- {r['id']} [{r['doc_id'] or 'без номера'}] ({r['section']}): {r['summary']}"
                          for r in all_reqs)
     user = f"""{doc_block(name, numbered)}
@@ -216,6 +218,11 @@ def conflict_scan_prompt(name: str, numbered: str, all_reqs: list[dict]) -> tupl
 Не выдумывай: если правила на самом деле совместимы (одно уточняет другое), это не противоречие. Коды \
 критериев: S-CNS для противоречий, S-COM для пропусков, S-CMP для терминологии. related_req_ids — \
 R-идентификаторы из списка выше."""
+    if brief_notes:
+        user = user.replace("Метод (в поле analysis пройди по шагам, коротко):",
+                            "Метод проверки (в поле analysis кратко перечисли проверенные правила и сценарии; "
+                            "пошаговые рассуждения не нужны):")
+        user = user.replace("Покажи расчёт в analysis. ", "Результат пересчёта кратко отметь в analysis. ")
     return SYSTEM, user
 
 

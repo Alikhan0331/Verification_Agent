@@ -257,7 +257,8 @@ def _check_set(doc, llm, grounder, reqs, warnings, passes: int = 2):
     ключевое противоречие, объединение нескольких выборок это сглаживает; дубли склеивает шаг 4.
     """
     sys1, user1 = prompts.set_check_prompt(doc.name, doc.numbered(), _req_view(reqs))
-    sys2, user2 = prompts.conflict_scan_prompt(doc.name, doc.numbered(), _req_view(reqs))
+    sys2, user2 = prompts.conflict_scan_prompt(doc.name, doc.numbered(), _req_view(reqs),
+                                               brief_notes=getattr(llm, "provider", "") == "anthropic")
     passes = max(passes, 1)
     with ThreadPoolExecutor(max_workers=2 * passes) as pool:
         f1 = [pool.submit(llm.generate, sys1, user1, SetResult, "набор", "high") for _ in range(passes)]

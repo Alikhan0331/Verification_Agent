@@ -22,6 +22,10 @@ class LLMError(RuntimeError):
     pass
 
 
+class RefusalError(LLMError):
+    """Модель отказалась отвечать (stop_reason=refusal у Claude): повтор и другая модель цепочки могут помочь."""
+
+
 def _log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
@@ -74,13 +78,20 @@ class LLMClient:
 
         effort: "low" | "medium" | "high" — глубина размышлений модели, если провайдер это умеет.
         """
+        self._tls.model = None          # модель только для этого запроса (после отказа первой модели цепочки)
+        try:
+            return self._generate(system, user, schema, label, effort, [])
+        finally:
+            self._tls.model = None
+
+    def _generate(self, system, user, schema, label, effort, refused):
         hint = ""
         last_err: Exception | None = None
         attempt = 0
         overload_streak = overload_total = 0
         while attempt < self.max_retries:
             attempt += 1
-            used = self.model
+            used = self._tls.model or self.model
             kidx = self._next_key(used)
             self._tls.key = kidx
             try:
@@ -96,6 +107,18 @@ class LLMClient:
                 _log(f"  [{label}] ответ не прошёл валидацию (попытка {attempt}): {str(e)[:200]}")
                 hint = ("\n\nПРЕДЫДУЩИЙ ОТВЕТ НЕ ПРОШЁЛ ВАЛИДАЦИЮ JSON-схемы. Верни строго по схеме, "
                         f"все поля обязательны. Ошибка: {str(e)[:400]}")
+            except RefusalError as e:
+                last_err = e
+                refused.append(used)
+                if len(refused) == 1:
+                    _log(f"  [{label}] {used} отказалась отвечать — повторяю запрос")
+                    continue
+                other = [m for m in self.models if m not in refused and m not in self._dead]
+                if not other:
+                    raise LLMError("Все модели отказались отвечать на запрос «" + label + "» (" + ", ".join(dict.fromkeys(refused)) +
+                                   "). Это сработала защита провайдера; попробуйте другую модель (--model).") from e
+                self._tls.model = other[0]
+                _log(f"  [{label}] {used} отказалась отвечать — пробую {other[0]}")
             except Exception as e:  # сетевые/квотные ошибки провайдера
                 last_err = e
                 s = str(e)
@@ -321,7 +344,7 @@ class AnthropicClient(LLMClient):
         if cfg:
             extra["output_config"] = cfg
         with self._client.messages.stream(
-                model=self.model, max_tokens=self._max_tokens, system=system,
+                model=getattr(self._tls, "model", None) or self.model, max_tokens=self._max_tokens, system=system,
                 messages=[{"role": "user", "content": user}], **extra) as stream:
             return stream.get_final_message()
 
@@ -360,7 +383,7 @@ class AnthropicClient(LLMClient):
                             tools=[tool], tool_choice={"type": "auto"})
         self._add_usage(msg.usage.input_tokens, msg.usage.output_tokens)
         if msg.stop_reason == "refusal":
-            raise LLMError("Модель отказалась отвечать (stop_reason=refusal)")
+            raise RefusalError("Модель отказалась отвечать (stop_reason=refusal)")
         if msg.stop_reason == "max_tokens":
             raise json.JSONDecodeError("ответ обрезан по max_tokens (увеличьте ANTHROPIC_MAX_TOKENS)", "", 0)
         for block in msg.content:

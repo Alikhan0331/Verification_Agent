@@ -115,7 +115,7 @@ def test_model_without_effort_support_is_retried_without_it(client):
 
 def test_refusal_and_truncation_are_reported(client):
     client.script = [_msg(text="", stop="refusal")]
-    with pytest.raises(LLMError, match="refusal"):
+    with pytest.raises(LLMError, match="отказались"):
         client.generate("s", "u", ConclusionText, "итог")
     client.script = [_msg(text='{"rationale": "обрыв', stop="max_tokens")]
     with pytest.raises(LLMError):
@@ -167,3 +167,30 @@ def test_unrelated_bad_request_is_not_swallowed(client):
     with pytest.raises(LLMError, match="credit balance"):
         client.generate("s", "u", ConclusionText, "итог")
     assert client._mode == "json"
+
+
+def test_refusal_retries_then_uses_next_model_of_the_chain(client):
+    """Отказ (stop_reason=refusal) — повтор, затем другая модель цепочки только для этого запроса."""
+    client.models = ["claude-sonnet-5-5", "claude-opus-5-5"]
+    client.script = [_msg(text="", stop="refusal"), _msg(text="", stop="refusal"), _msg()]
+    assert client.generate("s", "u", ConclusionText, "итог").rationale == "ок"
+    assert [kw["model"] for kw in client.sent] == ["claude-sonnet-5-5", "claude-sonnet-5-5", "claude-opus-5-5"]
+    assert client.model == "claude-sonnet-5-5"                       # основная модель клиента не менялась
+    assert client.calls_by_model == {"claude-opus-5-5": 1}
+
+
+def test_refusal_by_all_models_is_a_clear_error(client):
+    client.models = ["claude-sonnet-5-5", "claude-opus-5-5"]
+    client.script = [_msg(text="", stop="refusal")]
+    with pytest.raises(LLMError, match="Все модели отказались"):
+        client.generate("s", "u", ConclusionText, "итог")
+
+
+def test_conflict_scan_prompt_for_claude_does_not_ask_to_show_reasoning():
+    from reqcheck import prompts
+
+    reqs = [{"id": "R-01", "doc_id": "", "section": "A", "summary": "x"}]
+    _, plain = prompts.conflict_scan_prompt("d", "1: текст", reqs)
+    _, brief = prompts.conflict_scan_prompt("d", "1: текст", reqs, brief_notes=True)
+    assert "пройди по шагам" in plain and "Покажи расчёт в analysis" in plain         # Gemini: прежний промпт
+    assert "пройди по шагам" not in brief and "Покажи расчёт" not in brief
