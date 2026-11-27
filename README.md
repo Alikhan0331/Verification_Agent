@@ -9,9 +9,44 @@
 
 ---
 
-## Запуск за 5 шагов
+## Запуск одной командой
 
-Нужен Python 3.10 или новее. Команды ниже для Windows PowerShell; для Linux и macOS отличия указаны в комментариях.
+Нужны Python 3.10 или новее и [бесплатный ключ Gemini](https://aistudio.google.com/apikey) (Create API key,
+платный тариф не нужен). Скачайте репозиторий и выполните **одну команду** в его папке.
+
+Windows (PowerShell):
+
+```powershell
+git clone https://github.com/Alikhan0331/Verification_Agent.git
+cd Verification_Agent
+powershell -ExecutionPolicy Bypass -File .\run.ps1
+```
+
+Linux и macOS:
+
+```bash
+git clone https://github.com/Alikhan0331/Verification_Agent.git
+cd Verification_Agent
+bash run.sh
+```
+
+Скрипт сам создаёт окружение `.venv`, ставит зависимости, при первом запуске спрашивает ключ (вставьте его и
+нажмите Enter; он сохраняется в `.env`, который в репозиторий не попадает) и проверяет документ организаторов
+`docs/requirements.md`. Через 5–40 минут (бесплатный Gemini иногда перегружен, агент ждёт и повторяет запросы)
+появится `report.md`.
+
+Свой документ и параметры передаются после имени скрипта: `.\run.ps1 путь\к\документу.docx отчёт.md`
+или `bash run.sh путь/к/документу.docx отчёт.md`. Режим диалога: добавьте `--ask`
+(`.\run.ps1 --ask` проверит документ организаторов и задаст вопросы прямо в терминале).
+
+> Скрипты проверены на Windows 10 с Windows PowerShell 5.1. `run.sh` для Linux и macOS на этих системах
+> не запускался (проверен только синтаксис); если он не сработает, используйте ручной запуск ниже.
+
+---
+
+## Запуск вручную (5 шагов)
+
+Если скрипт не подошёл. Команды ниже для Windows PowerShell; для Linux и macOS отличия указаны в комментариях.
 
 **1. Скачайте репозиторий и перейдите в его папку.**
 
