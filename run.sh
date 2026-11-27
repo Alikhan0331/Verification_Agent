@@ -12,7 +12,9 @@
 #   bash run.sh путь/к/документу.docx отчёт.md --ask
 #   bash run.sh --provider anthropic
 #
-# Без аргументов: docs/requirements.md -> report.md.
+# Без аргументов: docs/requirements.md -> report.md. В живом терминале запуск идёт с --ask: после проверки агент
+# сразу задаёт уточняющие вопросы и учитывает ваши ответы. Отключить: --no-ask. Без терминала (пайп, автозапуск)
+# вопросов нет, ввода агент не ждёт.
 set -e
 cd "$(dirname "$0")"
 
@@ -38,5 +40,11 @@ fi
 # 3. Запуск. Без аргументов проверяем документ организаторов; если первым идёт параметр (--ask), добавляем пути.
 if [ "$#" -eq 0 ] || [ "${1#-}" != "$1" ]; then
     set -- docs/requirements.md report.md "$@"
+fi
+if [ -t 0 ] && [ -t 1 ]; then
+    case " $* " in
+        *" --ask "*|*" --no-ask "*) ;;
+        *) set -- "$@" --ask ;;
+    esac
 fi
 exec "$VPY" -m reqcheck "$@"

@@ -11,7 +11,9 @@
 #   powershell -ExecutionPolicy Bypass -File .\run.ps1 путь\к\документу.docx отчёт.md --ask
 #   powershell -ExecutionPolicy Bypass -File .\run.ps1 --provider anthropic
 #
-# Без аргументов: docs/requirements.md -> report.md.
+# Без аргументов: docs/requirements.md -> report.md. В живом терминале запуск идёт с --ask: после проверки агент
+# сразу задаёт уточняющие вопросы и учитывает ваши ответы. Отключить: --no-ask. Без терминала (пайп, автозапуск)
+# вопросов нет, ввода агент не ждёт.
 
 Set-Location $PSScriptRoot
 $venv = Join-Path $PSScriptRoot ".venv"
@@ -44,5 +46,7 @@ if (-not (Test-Path $stamp) -or ((Get-Content $stamp -Raw).Trim() -ne $want)) {
 # 3. Запуск. Без аргументов проверяем документ организаторов; если первым идёт параметр (--ask), добавляем пути.
 $runArgs = @($args)
 if ($runArgs.Count -eq 0 -or $runArgs[0].StartsWith("-")) { $runArgs = @("docs/requirements.md", "report.md") + $runArgs }
+$live = (-not [Console]::IsInputRedirected) -and (-not [Console]::IsOutputRedirected)
+if ($live -and -not ($runArgs -contains "--ask") -and -not ($runArgs -contains "--no-ask")) { $runArgs += "--ask" }
 & $py -m reqcheck @runArgs
 exit $LASTEXITCODE
