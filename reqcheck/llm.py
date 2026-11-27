@@ -34,6 +34,13 @@ def _err_text(e: Exception) -> str:
     msg = (err.get("message") if isinstance(err, dict) else None) or (body.get("message") if isinstance(body, dict) else None)
     if msg and msg not in s:
         s += f" — {msg}"
+    if not msg:                      # тело не разобрано (не JSON): показываем сырой ответ, например страницу прокси
+        try:
+            raw = " ".join(str(e.response.text).split())[:300]
+        except Exception:
+            raw = ""
+        if raw and raw not in s:
+            s += f" — ответ сервера: {raw}"
     low = s.lower()
     if "credit balance" in low:
         s += " [Недостаточно средств на счёте Anthropic: пополните баланс в Billing]"
