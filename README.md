@@ -22,11 +22,24 @@ cd Verification_Agent
 
 **2. Создайте окружение и поставьте зависимости.**
 
+Windows (PowerShell). Используйте команду `py`, а не `python`: на некоторых компьютерах `python` указывает на
+Python от MSYS2 или на заглушку Microsoft Store, и окружение получается неправильным.
+
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1        # Linux/macOS: source .venv/bin/activate
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
+
+Linux и macOS:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+После активации в начале строки терминала появится `(.venv)`.
 
 **3. Получите бесплатный ключ Gemini.** Откройте [Google AI Studio](https://aistudio.google.com/apikey),
 войдите аккаунтом Google и нажмите **Create API key**. Платный тариф не нужен.
@@ -58,6 +71,8 @@ python -m reqcheck docs/requirements.md report.md
 
 | Что видите | Что делать |
 | :-- | :-- |
+| `Activate.ps1 не распознано`, а в папке `.venv` есть `bin` вместо `Scripts` | Окружение создал не тот Python (`python` указывает на MSYS2). Удалите папку: `Remove-Item -Recurse -Force .venv`, создайте заново командой `py -m venv .venv` и повторите шаг 2. Без активации тоже можно: `.\.venv\Scripts\python.exe -m pip install -r requirements.txt`, а запуск `.\.venv\Scripts\python.exe -m reqcheck docs/requirements.md report.md`. |
+| `выполнение сценариев отключено` при активации | В этом окне PowerShell: `Set-ExecutionPolicy -Scope Process Bypass`, затем снова `.\.venv\Scripts\Activate.ps1`. |
 | `Не задан GEMINI_API_KEY` | Шаг 4: ключ должен быть в файле `.env` рядом с `README.md`. |
 | `суточная квота … исчерпана` | У бесплатного Gemini лимит около 20 запросов в сутки на модель, а прогон делает 20–30. Агент сам переходит на запасные модели из `GEMINI_FALLBACK_MODELS` (они уже прописаны в `.env.example`). Если не помогло, подождите сброса (раз в сутки), возьмите ключ другого проекта или добавьте несколько ключей: `GEMINI_API_KEYS=ключ1,ключ2`. |
 | `перегрузка (503)` | Это не ошибка: модель занята, агент подождёт и повторит. |
