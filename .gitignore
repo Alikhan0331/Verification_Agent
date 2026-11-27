@@ -8,3 +8,4 @@ __pycache__/
 report_v*.md
 report_v*.json
 eval_out/
+local/
